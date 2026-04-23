@@ -1,0 +1,7 @@
+- 이 프로젝트는 Next.js 14 App Router + TypeScript + Tailwind CSS
+- 이미지는 Base64 JSON으로 전송 (FormData 아님)
+- Claude Vision 모델: claude-sonnet-4-6 (KIE.AI 경유)
+- KIE.AI Anthropic Messages API: https://api.kie.ai/claude/v1/messages, 환경변수 KIE_API_KEY, KIE_API_BASE_URL(기본 https://api.kie.ai), KIE_VISION_MODEL
+- 디자인: 부모 세대 친화 (폰트 18px+, 버튼 60px+, 최대 폭 500px)
+- 색상: 배경 #FAFAF7, 포인트 #D14527
+- 모든 텍스트는 한국어
