@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ExtractResult {
   productCode: string;
@@ -19,6 +19,48 @@ function formatWon(n: number) {
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
 }
 
+function buildShareText(options: {
+  productCode: string;
+  storePriceNum: number | null;
+  lowestPrice: number | null;
+  origin: string;
+}): string {
+  const { productCode, storePriceNum, lowestPrice, origin } = options;
+  const lines: string[] = [
+    "━━━━━━━━━━━━━━━━",
+    "🔍 PriceTag로 확인한 가격 비교",
+    "",
+    `📌 ${productCode || "—"}`,
+  ];
+
+  const hasStorePrice =
+    storePriceNum != null && Number.isFinite(storePriceNum) && storePriceNum > 0;
+
+  if (hasStorePrice) {
+    lines.push(`🏬 매장가: ${formatWon(storePriceNum)}원`);
+  }
+
+  if (lowestPrice != null) {
+    lines.push(`✨ 온라인 최저: ${formatWon(lowestPrice)}원`);
+  }
+
+  const savingsAmount =
+    hasStorePrice && lowestPrice != null && storePriceNum > lowestPrice
+      ? storePriceNum - lowestPrice
+      : null;
+
+  if (savingsAmount != null && savingsAmount > 0) {
+    lines.push("");
+    lines.push(`🎉 최소 ${formatWon(savingsAmount)}원 아낄 수 있어요!`);
+  }
+
+  lines.push("");
+  lines.push("📱 당신도 확인해보세요:");
+  lines.push(origin);
+  lines.push("━━━━━━━━━━━━━━━━");
+  return lines.join("\n");
+}
+
 export default function Home() {
   const [imageBase64, setImageBase64] = useState<string>("");
   const [mimeType, setMimeType] = useState<string>("");
@@ -33,6 +75,10 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [storePrice, setStorePrice] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
+  const toastHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lowestPrice =
     searchResults.length > 0
@@ -49,6 +95,77 @@ export default function Home() {
     storePriceNum > lowestPrice
       ? storePriceNum - lowestPrice
       : null;
+
+  const showToast = useCallback((message: string) => {
+    if (toastHideTimerRef.current) {
+      clearTimeout(toastHideTimerRef.current);
+    }
+    if (toastClearTimerRef.current) {
+      clearTimeout(toastClearTimerRef.current);
+    }
+    setToastMessage(message);
+    setToastVisible(true);
+    toastHideTimerRef.current = setTimeout(() => {
+      setToastVisible(false);
+      toastClearTimerRef.current = setTimeout(() => {
+        setToastMessage(null);
+      }, 400);
+    }, 3000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastHideTimerRef.current) {
+        clearTimeout(toastHideTimerRef.current);
+      }
+      if (toastClearTimerRef.current) {
+        clearTimeout(toastClearTimerRef.current);
+      }
+    };
+  }, []);
+
+  const fallbackCopy = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("✅ 공유 내용이 복사됐어요! 원하는 곳에 붙여넣으세요");
+      } catch {
+        showToast("❌ 복사 실패. 직접 복사해주세요");
+      }
+    },
+    [showToast]
+  );
+
+  const handleShare = useCallback(async () => {
+    if (!extractResult || lowestPrice == null) {
+      return;
+    }
+    const shareText = buildShareText({
+      productCode: extractResult.productCode,
+      storePriceNum,
+      lowestPrice,
+      origin: typeof window !== "undefined" ? window.location.origin : "",
+    });
+
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({
+          title: "PriceTag - 가격 비교 결과",
+          text: shareText,
+          url: window.location.href,
+        });
+      } catch (err: unknown) {
+        const aborted =
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError");
+        if (!aborted) {
+          await fallbackCopy(shareText);
+        }
+      }
+    } else {
+      await fallbackCopy(shareText);
+    }
+  }, [extractResult, storePriceNum, lowestPrice, fallbackCopy]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -325,9 +442,28 @@ export default function Home() {
                 확인해보세요.
               </p>
             </div>
+
+            <button
+              type="button"
+              onClick={() => void handleShare()}
+              className="min-h-[60px] w-full rounded-2xl bg-[#FFEB3B] px-4 py-3 text-lg font-bold text-black shadow-sm transition hover:brightness-95 active:brightness-90"
+            >
+              📤 가족·친구에게 공유하기
+            </button>
           </section>
         ) : null}
       </main>
+
+      {toastMessage != null ? (
+        <div
+          className={`pointer-events-none fixed bottom-6 left-1/2 z-50 max-w-[min(100vw-2rem,28rem)] -translate-x-1/2 rounded-xl bg-black/80 px-4 py-3 text-center text-sm text-white shadow-lg transition-opacity duration-300 ${
+            toastVisible ? "opacity-100" : "opacity-0"
+          }`}
+          role="status"
+        >
+          {toastMessage}
+        </div>
+      ) : null}
     </div>
   );
 }
