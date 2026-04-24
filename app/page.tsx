@@ -206,22 +206,6 @@ function UploadDocumentIcon() {
   );
 }
 
-/** 네이버/스마트스토어 카드는 별도 안내로 이중 표시를 피함 */
-function shouldShowMallCardCouponHint(mallName: string, link: string): boolean {
-  const name = mallName.trim().toLowerCase();
-  if (name === "네이버" || name.includes("스마트스토어")) {
-    return false;
-  }
-  const u = link.toLowerCase();
-  if (
-    u.includes("smartstore.naver.com") ||
-    u.includes("brand.naver.com")
-  ) {
-    return false;
-  }
-  return true;
-}
-
 function buildShareText(options: {
   extract: ExtractResult;
   storePriceNum: number | null;
@@ -286,6 +270,7 @@ export default function Home() {
   const [toastVisible, setToastVisible] = useState(false);
   const [tipDismissed, setTipDismissed] = useState(false);
   const [confettiTick, setConfettiTick] = useState(0);
+  const [showCompareCta, setShowCompareCta] = useState(true);
   const toastHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -350,7 +335,7 @@ export default function Home() {
         mainSuffix: "비슷해요",
         subMessage: "매장에서 바로 구매하셔도 손해 없어요",
         bottomHint: "매장·온라인 모두 OK",
-        bgGradient: "linear-gradient(135deg, #FEF9C3 0%, #FEF3C7 100%)",
+        bgGradient: "#FEF3C7",
         borderColor: "rgba(234, 179, 8, 0.25)",
         mainColor: "#854D0E",
         subColor: "#A16207",
@@ -368,7 +353,7 @@ export default function Home() {
         mainSuffix: "아낄 수 있어요",
         subMessage: "온라인이 더 저렴해요",
         bottomHint: "아래 쇼핑몰에서 더 싸게 구매하세요 ↓",
-        bgGradient: "linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%)",
+        bgGradient: "#DCFCE7",
         borderColor: "rgba(34, 197, 94, 0.25)",
         mainColor: "#15803D",
         subColor: "#16A34A",
@@ -385,7 +370,7 @@ export default function Home() {
       mainSuffix: "더 싸요",
       subMessage: "매장 구매가 이득이에요",
       bottomHint: "매장에서 구매하세요 ↑",
-      bgGradient: "linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%)",
+      bgGradient: "#DBEAFE",
       borderColor: "rgba(59, 130, 246, 0.25)",
       mainColor: "#1E40AF",
       subColor: "#2563EB",
@@ -536,6 +521,7 @@ export default function Home() {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+    setShowCompareCta(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
@@ -592,6 +578,7 @@ export default function Home() {
       setImageBase64(b64);
       setMimeType(file.type || "image/jpeg");
       setPreviewUrl(result);
+      setShowCompareCta(true);
     };
     reader.readAsDataURL(file);
   };
@@ -602,6 +589,8 @@ export default function Home() {
       return;
     }
 
+    setShowCompareCta(false);
+    let analysisSucceededWithItems = false;
     setError("");
     setExtractResult(null);
     setSearchResults([]);
@@ -697,11 +686,15 @@ export default function Home() {
       }
 
       setSearchResults(items);
+      analysisSucceededWithItems = true;
     } catch {
       setError("일시적 오류, 다시 시도");
     } finally {
       setLoading(false);
       setLoadingStep(null);
+      if (!analysisSucceededWithItems) {
+        setShowCompareCta(true);
+      }
     }
   }, [imageBase64, mimeType]);
 
@@ -755,36 +748,45 @@ export default function Home() {
         </div>
       ) : null}
       <main
-        className={`mx-auto flex w-full max-w-[500px] flex-1 flex-col gap-6 px-6 sm:px-6 ${mainPadClass} transition-all duration-200 ease-out`}
+        className={`mx-auto flex w-full max-w-[500px] flex-1 flex-col items-center gap-6 px-6 sm:px-6 ${mainPadClass} transition-all duration-200 ease-out`}
       >
         <button
           type="button"
           onClick={handleResetToHome}
-          className="logo-button"
-          style={{ marginBottom: "48px" }}
+          className="logo-button flex w-full flex-col items-center"
+          style={{ marginBottom: "48px", gap: "6px" }}
           aria-label="홈으로 이동"
         >
           <h1
-            className="leading-tight"
+            className="leading-none"
             style={{
               fontSize: "48px",
               fontWeight: 900,
               letterSpacing: "-0.04em",
               color: "var(--text-primary)",
-              marginBottom: "8px",
+              marginBottom: "4px",
             }}
           >
             BOGOSA
           </h1>
           <p
-            className="text-[15px]"
-            style={{ color: "var(--text-secondary)" }}
+            style={{
+              fontSize: "15px",
+              color: "#4493FF",
+              fontWeight: 600,
+              letterSpacing: "-0.02em",
+              lineHeight: 1,
+            }}
           >
             보고, 사자!
           </p>
           <p
-            className="mt-1 text-sm"
-            style={{ color: "var(--text-tertiary)" }}
+            style={{
+              fontSize: "13px",
+              color: "var(--text-tertiary)",
+              letterSpacing: "-0.015em",
+              lineHeight: 1,
+            }}
           >
             사기 전에, 3초만
           </p>
@@ -799,84 +801,94 @@ export default function Home() {
           onChange={handleFileChange}
         />
         {!previewUrl ? (
-          <label htmlFor="tag-photo-input" className="upload-box w-full">
-            <UploadDocumentIcon />
-            <div
-              className="flex w-full flex-col items-center"
-              style={{ gap: "4px" }}
-            >
-              <p
-                className="m-0 text-center"
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 600,
-                  color: "#3A4556",
-                }}
+          <div className="upload-box-ambient w-full">
+            <label htmlFor="tag-photo-input" className="upload-box w-full">
+              <UploadDocumentIcon />
+              <div
+                className="flex w-full flex-col items-center"
+                style={{ gap: "6px" }}
               >
-                태그 사진 올려주세요
-              </p>
-              <p
-                className="m-0 text-center"
-                style={{
-                  fontSize: "14px",
-                  color: "#7A8595",
-                }}
-              >
-                가격·품번이 잘 보이게 찍어주세요
-              </p>
-            </div>
-          </label>
-        ) : null}
-
-        {previewUrl ? (
-          <div className="upload-preview-card w-full">
-            <img
-              src={previewUrl}
-              alt="선택한 상품 이미지 미리보기"
-              className="block max-h-64 w-full rounded-[20px] object-contain"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="mt-3 w-full"
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#4A90FF",
-                fontSize: "15px",
-                fontWeight: 500,
-                padding: "12px",
-                cursor: "pointer",
-              }}
-            >
-              사진 다시 선택
-            </button>
+                <p
+                  className="m-0 text-center"
+                  style={{
+                    fontSize: "19px",
+                    fontWeight: 700,
+                    color: "#1A1D29",
+                    letterSpacing: "-0.025em",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  태그 사진 올려주세요
+                </p>
+                <p
+                  className="m-0 text-center"
+                  style={{
+                    fontSize: "14px",
+                    color: "#7A8595",
+                    letterSpacing: "-0.015em",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  가격·품번이 잘 보이게 찍어주세요
+                </p>
+              </div>
+            </label>
           </div>
         ) : null}
 
-        <button
-          type="button"
-          onClick={runAnalyze}
-          disabled={loading || !imageBase64}
-          className="analyze-button"
-          style={{
-            background:
-              loading || !imageBase64 ? "#D5DBE3" : "#3B82F6",
-            borderRadius: "32px",
-            height: "64px",
-            width: "100%",
-            border: "none",
-            boxShadow: "none",
-            color: "white",
-            fontSize: "18px",
-            fontWeight: 700,
-            cursor:
-              loading || !imageBase64 ? "not-allowed" : "pointer",
-            transition: "all 0.15s ease",
-          }}
-        >
-          지금 비교하기
-        </button>
+        {previewUrl ? (
+          <div className="upload-box-ambient w-full">
+            <div className="upload-preview-card w-full">
+              <img
+                src={previewUrl}
+                alt="선택한 상품 이미지 미리보기"
+                className="block max-h-64 w-full rounded-[20px] object-contain"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="mt-3 w-full"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#4A90FF",
+                  fontSize: "15px",
+                  fontWeight: 500,
+                  padding: "12px",
+                  cursor: "pointer",
+                }}
+              >
+                사진 다시 선택
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {showCompareCta ? (
+          <button
+            type="button"
+            onClick={runAnalyze}
+            disabled={loading || !imageBase64}
+            className="analyze-button"
+            style={{
+              background:
+                loading || !imageBase64 ? "#D5DBE3" : "#4493FF",
+              borderRadius: "32px",
+              height: "64px",
+              width: "100%",
+              border: "none",
+              boxShadow: "none",
+              color: "white",
+              fontSize: "18px",
+              fontWeight: 700,
+              cursor:
+                loading || !imageBase64 ? "not-allowed" : "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            지금 비교하기
+          </button>
+        ) : null}
 
         {loading ? (
           <div
@@ -1087,18 +1099,6 @@ export default function Home() {
               >
                 <div
                   style={{
-                    position: "absolute",
-                    top: "-50%",
-                    left: "-50%",
-                    right: "-50%",
-                    bottom: "-50%",
-                    background: `radial-gradient(circle at center, ${savingsData.glowColor} 0%, transparent 60%)`,
-                    pointerEvents: "none",
-                  }}
-                  aria-hidden
-                />
-                <div
-                  style={{
                     position: "relative",
                     fontSize: "48px",
                     lineHeight: 1,
@@ -1231,17 +1231,12 @@ export default function Home() {
                         </div>
                       </a>
                       <div>
-                        {shouldShowMallCardCouponHint(
-                          item.mallName,
-                          item.link
-                        ) ? (
-                          <p
-                            className="mb-2 text-xs"
-                            style={{ color: "var(--text-tertiary)" }}
-                          >
-                            💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
-                          </p>
-                        ) : null}
+                        <p
+                          className="mb-2 text-xs"
+                          style={{ color: "var(--text-tertiary)" }}
+                        >
+                          💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
+                        </p>
                         <a
                           href={item.link}
                           target="_blank"
@@ -1309,7 +1304,7 @@ export default function Home() {
         ) : null}
 
         <footer
-          className="mt-auto pt-8 pb-8 text-center text-xs leading-relaxed"
+          className="mt-auto w-full pt-8 pb-8 text-center text-xs leading-relaxed"
           style={{ color: "var(--text-tertiary)" }}
         >
           BOGOSA는 쿠팡 파트너스 활동으로 수수료를 지급받을 수 있습니다
