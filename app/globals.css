@@ -77,7 +77,7 @@ main,
   -webkit-backdrop-filter: blur(30px) saturate(180%);
   backdrop-filter: blur(30px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 24px;
+  border-radius: 32px;
   box-shadow: var(--glass-shadow);
   padding: 24px;
   transition: box-shadow 0.2s ease-out, transform 0.2s ease-out;
@@ -89,7 +89,7 @@ main,
 
 .upload-box-ambient {
   position: relative;
-  border-radius: 36px;
+  border-radius: 32px;
   background: transparent;
 }
 

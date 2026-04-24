@@ -100,6 +100,21 @@ function getPriceCase(
   return { priceCase: "store_cheaper", absDiff, diff };
 }
 
+/**
+ * 네이버 카탈로그/아웃링크는 외부 referer 들어오면 캡차 띄움.
+ * 그런 링크는 상품명으로 네이버 쇼핑 검색 페이지를 열어 우회.
+ * 직링크(스마트스토어, 11번가, G마켓 등)는 그대로 사용.
+ */
+function resolveNaverLink(item: { link: string; title: string }): string {
+  const isCatalog = /search\.shopping\.naver\.com\/catalog\//.test(item.link);
+  const isOutlink = /shopping\.naver\.com\/outlink\//.test(item.link);
+  if (isCatalog || isOutlink) {
+    const cleanTitle = item.title.replace(/<[^>]+>/g, "").trim();
+    return `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(cleanTitle)}`;
+  }
+  return item.link;
+}
+
 function formatRecognitionLine(r: ExtractResult): string {
   const s = [r.brand, r.productType, r.productCode].filter(Boolean).join(" ");
   return s.trim() || "—";
@@ -293,6 +308,7 @@ export default function Home() {
     const naverMapped: MergedItem[] = searchResults.map((item) => ({
       ...item,
       lprice: parseItemLprice(item.lprice),
+      link: resolveNaverLink(item),
     }));
     const coupangMapped: MergedItem[] = coupangProducts.map((p) => ({
       title: p.productName,
@@ -844,7 +860,7 @@ export default function Home() {
       {showFixedShoppingTip ? (
         <div className="fixed left-0 right-0 top-0 z-40 flex justify-center px-4 pt-2">
           <div
-            className="flex w-full max-w-[500px] origin-top transform items-start justify-between gap-3 border border-[var(--tip-border)] px-5 py-4 transition-all duration-300 ease-in-out [background:var(--tip-bg)] [backdrop-filter:blur(20px)] [-webkit-backdrop-filter:blur(20px)] [box-shadow:0_4px_20px_rgba(255,213,0,0.15)] rounded-b-3xl"
+            className="mt-2 flex w-full max-w-[500px] origin-top transform items-start justify-between gap-3 border border-[var(--tip-border)] px-5 py-4 transition-all duration-300 ease-in-out [background:var(--tip-bg)] [backdrop-filter:blur(20px)] [-webkit-backdrop-filter:blur(20px)] [box-shadow:0_4px_20px_rgba(255,213,0,0.15)] rounded-3xl"
             role="region"
             aria-label="쇼핑 가격 안내"
           >
@@ -970,7 +986,7 @@ export default function Home() {
               <img
                 src={previewUrl}
                 alt="선택한 상품 이미지 미리보기"
-                className="block max-h-64 w-full rounded-[20px] object-contain"
+                className="block max-h-64 w-full rounded-3xl object-contain"
               />
               <button
                 type="button"
@@ -1102,7 +1118,7 @@ export default function Home() {
 
         {error ? (
           <div
-            className="rounded-2xl border p-4 text-center text-sm leading-relaxed [backdrop-filter:blur(10px)] [-webkit-backdrop-filter:blur(10px)]"
+            className="rounded-3xl border p-4 text-center text-sm leading-relaxed [backdrop-filter:blur(10px)] [-webkit-backdrop-filter:blur(10px)]"
             style={{
               background: "var(--error-bg)",
               borderColor: "rgba(239, 68, 68, 0.2)",
@@ -1248,7 +1264,7 @@ export default function Home() {
                     fontWeight: 600,
                     background: "rgba(255, 255, 255, 0.8)",
                     border: "1.5px solid rgba(74, 144, 255, 0.15)",
-                    borderRadius: "20px",
+                    borderRadius: "32px",
                     outline: "none",
                     transition: "all 0.2s",
                     color: "var(--text-primary)",
@@ -1280,7 +1296,7 @@ export default function Home() {
                   position: "relative",
                   background: savingsData.bgGradient,
                   border: `1.5px solid ${savingsData.borderColor}`,
-                  borderRadius: "28px",
+                  borderRadius: "32px",
                   padding: "32px 28px",
                   textAlign: "center",
                   overflow: "hidden",
@@ -1446,7 +1462,7 @@ export default function Home() {
                 }
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-4 flex min-h-14 w-full items-center justify-center rounded-2xl bg-[#03C75A] text-base font-semibold text-white no-underline shadow-md transition duration-200 hover:opacity-95"
+                className="mt-4 flex min-h-14 w-full items-center justify-center rounded-[32px] bg-[#03C75A] text-base font-semibold text-white no-underline shadow-md transition duration-200 hover:opacity-95"
               >
                 🔍 네이버 쇼핑에서 더 보기
               </a>
