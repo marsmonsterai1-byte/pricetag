@@ -928,7 +928,7 @@ export default function Home() {
           className="sr-only"
           onChange={handleFileChange}
         />
-        {!previewUrl ? (
+        {searchQuery.trim() === "" && !previewUrl ? (
           <div className="upload-box-ambient w-full">
             <label htmlFor="tag-photo-input" className="upload-box w-full">
               <UploadDocumentIcon />
@@ -964,7 +964,7 @@ export default function Home() {
           </div>
         ) : null}
 
-        {previewUrl ? (
+        {searchQuery.trim() === "" && previewUrl ? (
           <div className="upload-box-ambient w-full">
             <div className="upload-preview-card w-full">
               <img
@@ -992,6 +992,7 @@ export default function Home() {
           </div>
         ) : null}
 
+        {!previewUrl ? (
         <div className="flex w-full flex-col gap-2">
           <p
             className="text-center text-xs"
@@ -1035,6 +1036,7 @@ export default function Home() {
             />
           </form>
         </div>
+        ) : null}
 
         {showCompareCta ? (
           <button

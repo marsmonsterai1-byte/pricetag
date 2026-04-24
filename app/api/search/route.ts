@@ -174,6 +174,117 @@ function getErrorMessage(e: unknown): string {
   return "unknown error";
 }
 
+const COUPANG_RELEVANCE_THRESHOLD = 30;
+
+const COUPANG_GENERIC_WORDS = new Set([
+  "슬랙스",
+  "모자",
+  "티셔츠",
+  "바지",
+  "원피스",
+  "자켓",
+  "코트",
+  "신발",
+  "운동화",
+  "가방",
+  "지갑",
+  "시계",
+]);
+
+/** "NWSLPK0400" 같은 영문대문자+숫자 코드 추출 (없으면 null) */
+function extractProductCode(query: string): string | null {
+  const m = query.toUpperCase().match(/[A-Z]{2,}[A-Z0-9]{3,}/);
+  return m ? m[0] : null;
+}
+
+/**
+ * 브랜드 힌트 우선순위:
+ *  1) API에서 받은 brand
+ *  2) 쿼리 첫 토큰이 한글/영문 단어이면서 숫자 안 섞인 경우
+ *  3) (코드 단독 같은 케이스) 빈 문자열
+ */
+function extractBrandHint(brandFromApi: string, query: string): string {
+  if (brandFromApi) {
+    return brandFromApi;
+  }
+  const m = query.trim().match(/^\S+/);
+  if (!m) {
+    return "";
+  }
+  const firstToken = m[0];
+  if (/\d/.test(firstToken)) {
+    return "";
+  }
+  const brandMatch = firstToken.match(/^[가-힣A-Za-z]+/);
+  return brandMatch ? brandMatch[0] : "";
+}
+
+function scoreCoupangRelevance(
+  product: CoupangProduct,
+  query: string,
+  extractedCode: string | null,
+  brandHint: string
+): number {
+  const name = (product.productName ?? "").toLowerCase();
+  let score = 0;
+
+  if (extractedCode && name.includes(extractedCode.toLowerCase())) {
+    score += 100;
+  }
+
+  if (brandHint && name.includes(brandHint.toLowerCase())) {
+    score += 30;
+  }
+
+  const seen = new Set<string>();
+  for (const raw of query.split(/\s+/)) {
+    const t = raw.trim();
+    if (t.length < 2 || COUPANG_GENERIC_WORDS.has(t)) {
+      continue;
+    }
+    const tl = t.toLowerCase();
+    if (seen.has(tl)) {
+      continue;
+    }
+    seen.add(tl);
+    if (name.includes(tl)) {
+      score += 10;
+    }
+  }
+
+  return score;
+}
+
+function filterCoupangByRelevance(
+  products: CoupangProduct[],
+  query: string,
+  brand: string
+): CoupangProduct[] {
+  const code = extractProductCode(query);
+  const brandHint = extractBrandHint(brand, query);
+  const before = products.length;
+
+  const scored: { p: CoupangProduct; score: number }[] = products.map((p) => ({
+    p,
+    score: scoreCoupangRelevance(p, query, code, brandHint),
+  }));
+  const passed = scored.filter(
+    (s) => s.score >= COUPANG_RELEVANCE_THRESHOLD
+  );
+  const topScore = passed.reduce((m, s) => Math.max(m, s.score), 0);
+
+  console.log("[coupang filter]", {
+    query,
+    extractedCode: code,
+    brandHint: brandHint || null,
+    before,
+    after: passed.length,
+    topScore,
+  });
+
+  return passed.map((s) => s.p);
+}
+
 async function runNaver(
   primaryQuery: string,
   fallbackQuery: string,
@@ -202,19 +313,23 @@ async function runNaver(
 async function runCoupang(
   primaryQuery: string,
   fallbackQuery: string,
-  hasExtraTerms: boolean
+  hasExtraTerms: boolean,
+  brand: string
 ): Promise<CoupangResult> {
   try {
     let products = (await coupangSearchProducts(primaryQuery, COUPANG_LIMIT))
       .filter((p) => p.productPrice > 0);
+    products = filterCoupangByRelevance(products, primaryQuery, brand);
 
     if (
       products.length === 0 &&
       hasExtraTerms &&
       primaryQuery !== fallbackQuery
     ) {
-      products = (await coupangSearchProducts(fallbackQuery, COUPANG_LIMIT))
-        .filter((p) => p.productPrice > 0);
+      const fallback = (
+        await coupangSearchProducts(fallbackQuery, COUPANG_LIMIT)
+      ).filter((p) => p.productPrice > 0);
+      products = filterCoupangByRelevance(fallback, fallbackQuery, brand);
     }
 
     if (products.length === 0) {
@@ -273,7 +388,7 @@ export async function GET(request: NextRequest) {
 
     const settled = await Promise.allSettled([
       runNaver(primaryQuery, query, hasExtraTerms),
-      runCoupang(primaryQuery, query, hasExtraTerms),
+      runCoupang(primaryQuery, query, hasExtraTerms, brand),
     ]);
 
     const naverResult: NaverResult =
