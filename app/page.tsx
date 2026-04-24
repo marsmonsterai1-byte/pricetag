@@ -1,8 +1,10 @@
 "use client";
 
+import confetti from "canvas-confetti";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -27,8 +29,43 @@ const SIMILAR_THRESHOLD = 10_000;
 
 type PriceCase = "online_cheaper" | "similar" | "store_cheaper";
 
+type SavingsCardType = "similar" | "online_cheaper" | "store_cheaper";
+
+type SavingsCardData = {
+  type: SavingsCardType;
+  absDiff: number;
+  emoji: string;
+  label: string;
+  mainValue: string;
+  mainSuffix: string;
+  subMessage: string;
+  bottomHint: string;
+  bgGradient: string;
+  borderColor: string;
+  mainColor: string;
+  subColor: string;
+  borderLineColor: string;
+  glowColor: string;
+};
+
 function formatWon(n: number) {
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
+}
+
+/** 매장가 입력란: 숫자만 저장, 표시는 쉼표(원은 별도 span) */
+function formatStorePriceInput(value: string): string {
+  if (!value) {
+    return "";
+  }
+  const numbers = value.replace(/[^0-9]/g, "");
+  if (!numbers) {
+    return "";
+  }
+  const n = parseInt(numbers, 10);
+  if (!Number.isFinite(n)) {
+    return "";
+  }
+  return n.toLocaleString("ko-KR");
 }
 
 function parseItemLprice(n: number): number {
@@ -68,6 +105,107 @@ function buildNaverShoppingSearchUrl(r: ExtractResult): string {
   )}`;
 }
 
+function buildCoupangSearchUrl(r: ExtractResult): string {
+  const q = [r.brand, r.productType, r.productCode]
+    .filter((s) => s.trim().length > 0)
+    .map((s) => s.trim())
+    .join(" ");
+  return `https://www.coupang.com/np/search?q=${encodeURIComponent(
+    q || r.productCode
+  )}`;
+}
+
+function formatBrandTypeLine(r: ExtractResult): string {
+  return [r.brand, r.productType].filter(Boolean).join(" ").trim() || "—";
+}
+
+/** 겹친 문서 + 글래스 느낌 (업로드 영역) */
+function UploadDocumentIcon() {
+  const uid = useId().replace(/:/g, "");
+  const back = `${uid}-back`;
+  const glass = `${uid}-glass`;
+  const sheen = `${uid}-sheen`;
+  const clip = `${uid}-clip`;
+
+  return (
+    <svg
+      width={64}
+      height={64}
+      viewBox="0 0 64 64"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="shrink-0"
+      style={{
+        filter: "drop-shadow(0 4px 14px rgba(60, 120, 220, 0.28))",
+      }}
+      aria-hidden
+    >
+      <defs>
+        <linearGradient
+          id={back}
+          x1="6"
+          y1="18"
+          x2="6"
+          y2="58"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#5CB0FF" />
+          <stop offset="1" stopColor="#2B7AE8" />
+        </linearGradient>
+        <linearGradient
+          id={glass}
+          x1="20"
+          y1="6"
+          x2="52"
+          y2="50"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="rgba(255,255,255,0.52)" />
+          <stop offset="0.45" stopColor="rgba(255,255,255,0.22)" />
+          <stop offset="1" stopColor="rgba(210,230,255,0.14)" />
+        </linearGradient>
+        <linearGradient
+          id={sheen}
+          x1="18"
+          y1="6"
+          x2="18"
+          y2="32"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="rgba(255,255,255,0.5)" />
+          <stop offset="1" stopColor="rgba(255,255,255,0)" />
+        </linearGradient>
+        <clipPath id={clip}>
+          <rect x="18" y="6" width="36" height="40" rx="9" />
+        </clipPath>
+      </defs>
+      <rect x="4" y="20" width="36" height="40" rx="9" fill={`url(#${back})`} />
+      <rect
+        x="18"
+        y="6"
+        width="36"
+        height="40"
+        rx="9"
+        fill={`url(#${glass})`}
+        stroke="rgba(255,255,255,0.72)"
+        strokeWidth="1"
+      />
+      <rect
+        x="18"
+        y="6"
+        width="36"
+        height="22"
+        fill={`url(#${sheen})`}
+        clipPath={`url(#${clip})`}
+      />
+      <rect x="24" y="16" width="24" height="2.5" rx="1.25" fill="white" />
+      <rect x="24" y="22" width="24" height="2.5" rx="1.25" fill="white" />
+      <rect x="24" y="28" width="24" height="2.5" rx="1.25" fill="white" />
+      <rect x="24" y="34" width="12" height="2.5" rx="1.25" fill="white" />
+    </svg>
+  );
+}
+
 /** 네이버/스마트스토어 카드는 별도 안내로 이중 표시를 피함 */
 function shouldShowMallCardCouponHint(mallName: string, link: string): boolean {
   const name = mallName.trim().toLowerCase();
@@ -93,7 +231,7 @@ function buildShareText(options: {
   const { extract, storePriceNum, lowestPrice, origin } = options;
   const lines: string[] = [
     "━━━━━━━━━━━━━━━━",
-    "🔍 PriceTag로 확인한 가격 비교",
+    "🔍 BOGOSA로 확인한 가격 비교",
     "",
     `📌 ${formatRecognitionLine(extract)}`,
   ];
@@ -147,8 +285,12 @@ export default function Home() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [tipDismissed, setTipDismissed] = useState(false);
+  const [confettiTick, setConfettiTick] = useState(0);
   const toastHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const confettiFiredForSessionRef = useRef(false);
+  const confettiIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { sortedSearchResults, lowestPrice } = useMemo(() => {
     const withPrices = searchResults.map((item) => ({
@@ -187,15 +329,134 @@ export default function Home() {
     ? Number(storePrice.replace(/[^0-9]/g, ""))
     : null;
 
-  const hasStorePriceForCompare =
-    storePriceNum != null &&
-    Number.isFinite(storePriceNum) &&
-    storePriceNum > 0;
+  const savingsData = useMemo((): SavingsCardData | null => {
+    if (!storePrice || lowestPrice == null) {
+      return null;
+    }
+    const storeNum = parseInt(storePrice.replace(/[^0-9]/g, ""), 10);
+    if (!Number.isFinite(storeNum) || storeNum <= 0) {
+      return null;
+    }
+    const diff = storeNum - lowestPrice;
+    const absDiff = Math.abs(diff);
 
-  const priceCompare =
-    hasStorePriceForCompare && lowestPrice != null
-      ? getPriceCase(storePriceNum, lowestPrice)
+    if (absDiff <= SIMILAR_THRESHOLD) {
+      return {
+        type: "similar",
+        absDiff,
+        emoji: "🤝",
+        label: "가격 차이",
+        mainValue: `${absDiff.toLocaleString("ko-KR")}원`,
+        mainSuffix: "비슷해요",
+        subMessage: "매장에서 바로 구매하셔도 손해 없어요",
+        bottomHint: "매장·온라인 모두 OK",
+        bgGradient: "linear-gradient(135deg, #FEF9C3 0%, #FEF3C7 100%)",
+        borderColor: "rgba(234, 179, 8, 0.25)",
+        mainColor: "#854D0E",
+        subColor: "#A16207",
+        borderLineColor: "rgba(234, 179, 8, 0.2)",
+        glowColor: "rgba(234, 179, 8, 0.1)",
+      };
+    }
+    if (diff > 0) {
+      return {
+        type: "online_cheaper",
+        absDiff,
+        emoji: "🎉",
+        label: "절약 가능 금액",
+        mainValue: `${absDiff.toLocaleString("ko-KR")}원`,
+        mainSuffix: "아낄 수 있어요",
+        subMessage: "온라인이 더 저렴해요",
+        bottomHint: "아래 쇼핑몰에서 더 싸게 구매하세요 ↓",
+        bgGradient: "linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%)",
+        borderColor: "rgba(34, 197, 94, 0.25)",
+        mainColor: "#15803D",
+        subColor: "#16A34A",
+        borderLineColor: "rgba(34, 197, 94, 0.2)",
+        glowColor: "rgba(34, 197, 94, 0.1)",
+      };
+    }
+    return {
+      type: "store_cheaper",
+      absDiff,
+      emoji: "💪",
+      label: "매장이 더 저렴해요",
+      mainValue: `${absDiff.toLocaleString("ko-KR")}원`,
+      mainSuffix: "더 싸요",
+      subMessage: "매장 구매가 이득이에요",
+      bottomHint: "매장에서 구매하세요 ↑",
+      bgGradient: "linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%)",
+      borderColor: "rgba(59, 130, 246, 0.25)",
+      mainColor: "#1E40AF",
+      subColor: "#2563EB",
+      borderLineColor: "rgba(59, 130, 246, 0.2)",
+      glowColor: "rgba(59, 130, 246, 0.1)",
+    };
+  }, [storePrice, lowestPrice]);
+
+  const confettiSavingsKey =
+    savingsData?.type === "online_cheaper" && savingsData.absDiff > 0
+      ? savingsData.absDiff
       : null;
+
+  const confettiRunKey =
+    confettiSavingsKey != null
+      ? `${confettiTick}-${confettiSavingsKey}`
+      : null;
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (confettiRunKey == null) {
+      return;
+    }
+    if (confettiFiredForSessionRef.current) {
+      return;
+    }
+    confettiFiredForSessionRef.current = true;
+
+    const timer = setTimeout(() => {
+      const duration = 2000;
+      const end = Date.now() + duration;
+      const id = setInterval(() => {
+        if (Date.now() > end) {
+          if (confettiIntervalRef.current) {
+            clearInterval(confettiIntervalRef.current);
+            confettiIntervalRef.current = null;
+          }
+          return;
+        }
+        confetti({
+          particleCount: 3,
+          angle: 60,
+          spread: 55,
+          origin: { x: 0, y: 0.6 },
+          colors: ["#22C55E", "#10B981", "#FFD700", "#FF6B6B", "#4A90FF"],
+          shapes: ["circle", "square"],
+          scalar: 1,
+        });
+        confetti({
+          particleCount: 3,
+          angle: 120,
+          spread: 55,
+          origin: { x: 1, y: 0.6 },
+          colors: ["#22C55E", "#10B981", "#FFD700", "#FF6B6B", "#4A90FF"],
+          shapes: ["circle", "square"],
+          scalar: 1,
+        });
+      }, 150);
+      confettiIntervalRef.current = id;
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      if (confettiIntervalRef.current) {
+        clearInterval(confettiIntervalRef.current);
+        confettiIntervalRef.current = null;
+      }
+    };
+  }, [confettiRunKey]);
 
   const showToast = useCallback((message: string) => {
     if (toastHideTimerRef.current) {
@@ -213,6 +474,19 @@ export default function Home() {
       }, 400);
     }, 3000);
   }, []);
+
+  const handleCopyProductCode = useCallback(async () => {
+    const code = extractResult?.productCode?.trim() ?? "";
+    if (!code) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      showToast(`✅ "${code}" 복사됨`);
+    } catch {
+      showToast("❌ 복사 실패. 직접 선택해 복사해주세요");
+    }
+  }, [extractResult, showToast]);
 
   useEffect(() => {
     return () => {
@@ -237,6 +511,34 @@ export default function Home() {
     [showToast]
   );
 
+  const handleResetToHome = useCallback(() => {
+    if (toastHideTimerRef.current) {
+      clearTimeout(toastHideTimerRef.current);
+      toastHideTimerRef.current = null;
+    }
+    if (toastClearTimerRef.current) {
+      clearTimeout(toastClearTimerRef.current);
+      toastClearTimerRef.current = null;
+    }
+    setImageBase64("");
+    setMimeType("");
+    setPreviewUrl("");
+    setLoading(false);
+    setLoadingStep(null);
+    setExtractResult(null);
+    setSearchResults([]);
+    setStorePrice("");
+    setError("");
+    setToastMessage(null);
+    setToastVisible(false);
+    setTipDismissed(false);
+    confettiFiredForSessionRef.current = false;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
   const handleShare = useCallback(async () => {
     if (!extractResult || lowestPrice == null) {
       return;
@@ -251,7 +553,7 @@ export default function Home() {
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
         await navigator.share({
-          title: "PriceTag - 가격 비교 결과",
+          title: "BOGOSA - 가격 비교 결과",
           text: shareText,
           url: window.location.href,
         });
@@ -305,6 +607,8 @@ export default function Home() {
     setSearchResults([]);
     setStorePrice("");
     setTipDismissed(false);
+    confettiFiredForSessionRef.current = false;
+    setConfettiTick((t) => t + 1);
     setLoading(true);
     setLoadingStep("extract");
 
@@ -357,7 +661,7 @@ export default function Home() {
       }
 
       if (priceFromTag !== null) {
-        setStorePrice(formatWon(Math.max(0, Math.round(priceFromTag))));
+        setStorePrice(String(Math.max(0, Math.round(priceFromTag))));
       }
 
       setLoadingStep("search");
@@ -406,25 +710,34 @@ export default function Home() {
   const showFixedShoppingTip = hasSearchSuccess && !tipDismissed;
 
   const mainPadClass = !hasSearchSuccess
-    ? "py-8"
+    ? "pt-[60px] pb-8"
     : tipDismissed
-      ? "pt-6 pb-8"
-      : "pt-28 pb-8";
+      ? "pt-[60px] pb-8"
+      : "pt-40 pb-8";
 
   return (
-    <div className="min-h-screen bg-white text-zinc-900">
+    <div
+      className="relative z-[1] flex min-h-screen flex-col"
+      style={{ color: "var(--text-primary)" }}
+    >
       {showFixedShoppingTip ? (
-        <div className="fixed left-0 right-0 top-0 z-40 flex justify-center px-4 pt-3">
+        <div className="fixed left-0 right-0 top-0 z-40 flex justify-center px-4 pt-2">
           <div
-            className="flex w-full max-w-[500px] origin-top transform items-start justify-between gap-2 rounded-b-2xl bg-[#FFF3CD] p-3 px-4 shadow-lg transition-all duration-300 ease-out"
+            className="flex w-full max-w-[500px] origin-top transform items-start justify-between gap-3 border border-[var(--tip-border)] px-5 py-4 transition-all duration-300 ease-in-out [background:var(--tip-bg)] [backdrop-filter:blur(20px)] [-webkit-backdrop-filter:blur(20px)] [box-shadow:0_4px_20px_rgba(255,213,0,0.15)] rounded-b-3xl"
             role="region"
             aria-label="쇼핑 가격 안내"
           >
             <div className="min-w-0 flex-1 pr-1">
-              <p className="text-base font-bold text-zinc-900">
+              <p
+                className="text-base font-bold"
+                style={{ color: "var(--text-primary)" }}
+              >
                 💰 들어가보면 더 싸질 수 있어요!
               </p>
-              <p className="mt-1 text-sm leading-snug text-gray-700">
+              <p
+                className="mt-1 text-sm leading-relaxed"
+                style={{ color: "var(--text-secondary)" }}
+              >
                 쿠폰·회원할인·카드혜택이 숨어있어요. 링크 들어가서 꼭
                 확인해보세요&nbsp;👀
               </p>
@@ -432,7 +745,8 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setTipDismissed(true)}
-              className="min-h-0 min-w-[2.5rem] shrink-0 rounded-lg p-2 text-2xl leading-none text-[#666] transition hover:bg-black/5 hover:opacity-80"
+              className="min-h-0 min-w-[2.5rem] shrink-0 rounded-xl p-2 text-2xl leading-none transition hover:bg-white/20"
+              style={{ color: "var(--text-secondary)" }}
               aria-label="쇼핑 팁 닫기"
             >
               ×
@@ -441,52 +755,158 @@ export default function Home() {
         </div>
       ) : null}
       <main
-        className={`mx-auto flex w-full max-w-md flex-col gap-6 px-4 ${mainPadClass} transition-all duration-300 ease-out`}
+        className={`mx-auto flex w-full max-w-[500px] flex-1 flex-col gap-6 px-6 sm:px-6 ${mainPadClass} transition-all duration-200 ease-out`}
       >
-        <h1 className="text-center text-2xl font-bold sm:text-3xl">
-          사기 전에, 3초만
-        </h1>
+        <button
+          type="button"
+          onClick={handleResetToHome}
+          className="logo-button"
+          style={{ marginBottom: "48px" }}
+          aria-label="홈으로 이동"
+        >
+          <h1
+            className="leading-tight"
+            style={{
+              fontSize: "48px",
+              fontWeight: 900,
+              letterSpacing: "-0.04em",
+              color: "var(--text-primary)",
+              marginBottom: "8px",
+            }}
+          >
+            BOGOSA
+          </h1>
+          <p
+            className="text-[15px]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            보고, 사자!
+          </p>
+          <p
+            className="mt-1 text-sm"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            사기 전에, 3초만
+          </p>
+        </button>
 
-        <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-zinc-300 bg-zinc-50 px-4 py-12 transition hover:border-zinc-400">
-          <span className="text-lg font-medium text-zinc-600">사진 선택</span>
-          <input
-            type="file"
-            accept="image/*"
-            className="sr-only"
-            onChange={handleFileChange}
-          />
-        </label>
+        <input
+          id="tag-photo-input"
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="sr-only"
+          onChange={handleFileChange}
+        />
+        {!previewUrl ? (
+          <label htmlFor="tag-photo-input" className="upload-box w-full">
+            <UploadDocumentIcon />
+            <div
+              className="flex w-full flex-col items-center"
+              style={{ gap: "4px" }}
+            >
+              <p
+                className="m-0 text-center"
+                style={{
+                  fontSize: "18px",
+                  fontWeight: 600,
+                  color: "#3A4556",
+                }}
+              >
+                태그 사진 올려주세요
+              </p>
+              <p
+                className="m-0 text-center"
+                style={{
+                  fontSize: "14px",
+                  color: "#7A8595",
+                }}
+              >
+                가격·품번이 잘 보이게 찍어주세요
+              </p>
+            </div>
+          </label>
+        ) : null}
 
         {previewUrl ? (
-          <img
-            src={previewUrl}
-            alt="선택한 상품 이미지 미리보기"
-            className="mx-auto max-h-64 w-auto rounded-lg border object-contain"
-          />
+          <div className="upload-preview-card w-full">
+            <img
+              src={previewUrl}
+              alt="선택한 상품 이미지 미리보기"
+              className="block max-h-64 w-full rounded-[20px] object-contain"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="mt-3 w-full"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#4A90FF",
+                fontSize: "15px",
+                fontWeight: 500,
+                padding: "12px",
+                cursor: "pointer",
+              }}
+            >
+              사진 다시 선택
+            </button>
+          </div>
         ) : null}
 
         <button
           type="button"
           onClick={runAnalyze}
           disabled={loading || !imageBase64}
-          className="h-14 w-full rounded-xl bg-zinc-900 text-lg font-semibold text-white transition enabled:hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+          className="analyze-button"
+          style={{
+            background:
+              loading || !imageBase64 ? "#D5DBE3" : "#3B82F6",
+            borderRadius: "32px",
+            height: "64px",
+            width: "100%",
+            border: "none",
+            boxShadow: "none",
+            color: "white",
+            fontSize: "18px",
+            fontWeight: 700,
+            cursor:
+              loading || !imageBase64 ? "not-allowed" : "pointer",
+            transition: "all 0.15s ease",
+          }}
         >
-          분석하기
+          지금 비교하기
         </button>
 
         {loading ? (
-          <p className="text-center text-lg text-zinc-600">
-            {loadingStep === "extract"
-              ? "품번 인식 중..."
-              : loadingStep === "search"
-                ? "가격 검색 중..."
-                : "처리 중..."}
-          </p>
+          <div
+            className="flex items-center justify-center gap-3 px-4 py-4 text-base font-medium"
+            style={{ color: "var(--text-secondary)" }}
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="loading-spinner"
+              aria-hidden
+            />
+            <span>
+              {loadingStep === "extract"
+                ? "품번 인식 중..."
+                : loadingStep === "search"
+                  ? "가격 검색 중..."
+                  : "처리 중..."}
+            </span>
+          </div>
         ) : null}
 
         {error ? (
           <div
-            className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-red-800"
+            className="rounded-2xl border p-4 text-center text-sm leading-relaxed [backdrop-filter:blur(10px)] [-webkit-backdrop-filter:blur(10px)]"
+            style={{
+              background: "var(--error-bg)",
+              borderColor: "rgba(239, 68, 68, 0.2)",
+              color: "var(--error-text)",
+            }}
             role="alert"
           >
             {error}
@@ -494,128 +914,331 @@ export default function Home() {
         ) : null}
 
         {extractResult && !error && searchResults.length > 0 ? (
-          <section className="flex flex-col gap-4">
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-              <p className="text-lg font-semibold leading-snug">
-                인식 결과: {formatRecognitionLine(extractResult)}
+          <section className="flex flex-col gap-4 sm:gap-6">
+            <div className="glass-card !p-6">
+              <p
+                className="text-sm"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                인식 결과
               </p>
+              <p
+                className="mt-1 text-xl font-medium leading-snug"
+                style={{ color: "var(--text-primary)" }}
+              >
+                {formatBrandTypeLine(extractResult)}
+              </p>
+              {(() => {
+                const productCode = extractResult.productCode?.trim() ?? "";
+                return (
+                  <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
+                    <h2
+                      className={
+                        productCode
+                          ? "min-w-0 flex-1 cursor-pointer text-[28px] font-bold leading-tight"
+                          : "min-w-0 flex-1 text-[28px] font-bold leading-tight"
+                      }
+                      onClick={productCode ? handleCopyProductCode : undefined}
+                      onKeyDown={
+                        productCode
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                void handleCopyProductCode();
+                              }
+                            }
+                          : undefined
+                      }
+                      tabIndex={productCode ? 0 : undefined}
+                      aria-label={
+                        productCode
+                          ? `품번 ${productCode}, 클릭하여 복사`
+                          : undefined
+                      }
+                      style={{
+                        color: "var(--text-primary)",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {productCode || "—"}
+                    </h2>
+                    {productCode ? (
+                      <button
+                        type="button"
+                        onClick={handleCopyProductCode}
+                        className="copy-button"
+                        aria-label="품번 복사"
+                      >
+                        복사
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })()}
               {extractResult.price !== null ? (
-                <p className="mt-2 text-xs text-gray-500">
-                  💡 태그에서 가격을 자동으로 읽었어요. 다르면 수정하세요
+                <p
+                  className="mt-4 text-xs"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  💡 태그에서 가격 자동 입력됨 — 다르면 아래에서 수정하세요
                 </p>
               ) : null}
             </div>
 
-            <div>
-              <p className="text-sm text-zinc-500">온라인 최저 표시가</p>
-              <p className="text-4xl font-bold text-orange-600">
+            <div
+              className="glass-card !p-6"
+              style={{ border: "1px solid rgba(74, 144, 255, 0.2)" }}
+            >
+              <p
+                className="text-sm"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                온라인 최저 표시가
+              </p>
+              <p
+                className="mt-1 text-4xl font-bold leading-none tracking-[-0.02em] sm:text-[56px]"
+                style={{ color: "var(--text-primary)" }}
+              >
                 {lowestPrice != null ? `${formatWon(lowestPrice)}원` : "—"}
               </p>
-              <p className="mt-1 text-xs text-gray-500">
-                * 표시된 가격은 기본 판매가예요. 쇼핑몰 들어가면 더 저렴할 수
-                있어요
+              <p
+                className="mt-3 text-xs leading-relaxed"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                쇼핑몰 쿠폰·회원 혜택 적용 시 표시가보다 더 저렴할 수 있어요
               </p>
             </div>
 
             <div>
               <label
                 htmlFor="store-price"
-                className="mb-1 block text-sm font-medium text-zinc-600"
+                className="mb-2 block text-sm font-medium"
+                style={{ color: "var(--text-secondary)" }}
               >
-                매장 가격 (원)
+                매장에서 본 가격
               </label>
-              <input
-                id="store-price"
-                type="text"
-                inputMode="numeric"
-                placeholder="숫자만 입력"
-                value={storePrice}
-                onChange={(e) => {
-                  const raw = e.target.value.replace(/[^0-9]/g, "");
-                  setStorePrice(raw ? formatWon(Number(raw)) : "");
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
                 }}
-                className="h-14 w-full rounded-xl border border-zinc-300 px-4 text-lg outline-none focus:border-zinc-900"
-              />
+              >
+                <input
+                  id="store-price"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="숫자만 입력"
+                  value={formatStorePriceInput(storePrice)}
+                  onChange={(e) => {
+                    const numericValue = e.target.value.replace(
+                      /[^0-9]/g,
+                      ""
+                    );
+                    setStorePrice(numericValue);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "20px 60px 20px 24px",
+                    fontSize: "24px",
+                    fontWeight: 600,
+                    background: "rgba(255, 255, 255, 0.8)",
+                    border: "1.5px solid rgba(74, 144, 255, 0.15)",
+                    borderRadius: "20px",
+                    outline: "none",
+                    transition: "all 0.2s",
+                    color: "var(--text-primary)",
+                  }}
+                />
+                {storePrice ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      right: "24px",
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      fontSize: "20px",
+                      fontWeight: 600,
+                      color: "var(--text-secondary, #6B7280)",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    원
+                  </span>
+                ) : null}
+              </div>
             </div>
 
-            {priceCompare ? (
-              priceCompare.priceCase === "online_cheaper" ? (
+            {savingsData ? (
+              <div
+                className="savings-card"
+                style={{
+                  position: "relative",
+                  background: savingsData.bgGradient,
+                  border: `1.5px solid ${savingsData.borderColor}`,
+                  borderRadius: "28px",
+                  padding: "32px 28px",
+                  textAlign: "center",
+                  overflow: "hidden",
+                  boxShadow: `
+        0 8px 32px ${savingsData.glowColor},
+        inset 0 1px 0 rgba(255, 255, 255, 0.8)
+      `,
+                }}
+              >
                 <div
-                  className="rounded-2xl px-5 py-5 text-center"
-                  style={{ backgroundColor: "#D4EDDA" }}
-                >
-                  <p className="text-lg font-bold text-green-900 sm:text-xl">
-                    🎉 최소 {formatWon(priceCompare.absDiff)}원 아낄 수 있어요
-                  </p>
-                  <p className="mt-2 text-sm text-gray-600">
-                    → 아래 쇼핑몰에서 더 싸게 구매하세요
-                  </p>
-                </div>
-              ) : priceCompare.priceCase === "similar" ? (
+                  style={{
+                    position: "absolute",
+                    top: "-50%",
+                    left: "-50%",
+                    right: "-50%",
+                    bottom: "-50%",
+                    background: `radial-gradient(circle at center, ${savingsData.glowColor} 0%, transparent 60%)`,
+                    pointerEvents: "none",
+                  }}
+                  aria-hidden
+                />
                 <div
-                  className="rounded-2xl px-5 py-5 text-center"
-                  style={{ backgroundColor: "#FFF3CD" }}
+                  style={{
+                    position: "relative",
+                    fontSize: "48px",
+                    lineHeight: 1,
+                    marginBottom: "16px",
+                  }}
+                  aria-hidden
                 >
-                  <p className="text-lg font-bold text-zinc-900 sm:text-xl">
-                    😐 비슷한 가격이에요
-                  </p>
-                  <p className="mt-2 text-sm text-gray-600">
-                    차이 {formatWon(priceCompare.absDiff)}원 / 매장에서 바로
-                    구매하셔도 손해 없어요
-                  </p>
+                  {savingsData.emoji}
                 </div>
-              ) : (
                 <div
-                  className="rounded-2xl px-5 py-5 text-center"
-                  style={{ backgroundColor: "#D1ECF1" }}
+                  style={{
+                    position: "relative",
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    color: savingsData.mainColor,
+                    letterSpacing: "0.02em",
+                    marginBottom: "12px",
+                    opacity: 0.85,
+                  }}
                 >
-                  <p className="text-lg font-bold text-cyan-950 sm:text-xl">
-                    💪 매장이 {formatWon(priceCompare.absDiff)}원 더 싸네요!
-                  </p>
-                  <p className="mt-2 text-sm text-gray-600">
-                    → 매장에서 구매하시는 게 이득이에요
-                  </p>
+                  {savingsData.label}
                 </div>
-              )
+                <div
+                  style={{
+                    position: "relative",
+                    fontSize: "44px",
+                    fontWeight: 800,
+                    color: savingsData.mainColor,
+                    letterSpacing: "-0.03em",
+                    lineHeight: 1.1,
+                    marginBottom: "8px",
+                  }}
+                >
+                  {savingsData.mainValue}
+                </div>
+                <div
+                  style={{
+                    position: "relative",
+                    fontSize: "18px",
+                    fontWeight: 600,
+                    color: savingsData.subColor,
+                    marginBottom: "4px",
+                  }}
+                >
+                  {savingsData.mainSuffix}
+                </div>
+                <div
+                  style={{
+                    position: "relative",
+                    fontSize: "14px",
+                    fontWeight: 500,
+                    color: savingsData.subColor,
+                    opacity: 0.8,
+                    marginBottom: "20px",
+                  }}
+                >
+                  {savingsData.subMessage}
+                </div>
+                <div
+                  style={{
+                    position: "relative",
+                    height: "1px",
+                    background: savingsData.borderLineColor,
+                    margin: "0 -8px 16px -8px",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "relative",
+                    fontSize: "13px",
+                    color: savingsData.mainColor,
+                    opacity: 0.7,
+                    fontWeight: 500,
+                  }}
+                >
+                  {savingsData.bottomHint}
+                </div>
+              </div>
             ) : null}
 
             <div>
-              <p className="mb-2 text-sm font-medium text-zinc-600">
+              <p
+                className="mb-4 text-2xl font-semibold"
+                style={{ color: "var(--text-primary)" }}
+              >
                 가격 비교
               </p>
-              <ul className="flex flex-col gap-3">
+              <ul className="flex flex-col gap-4">
                 {sortedSearchResults.map((item, idx) => (
                   <li key={`${item.link}-${idx}`}>
-                    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white transition hover:border-zinc-400">
+                    <div
+                      className="glass-card !p-5 transition duration-200 ease-out hover:[box-shadow:var(--glass-shadow-hover)]"
+                    >
                       <a
                         href={item.link}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="flex w-full flex-col gap-1 p-4 text-left text-inherit no-underline transition hover:bg-zinc-50"
+                        className="mb-3 flex w-full flex-col gap-1.5 text-left text-inherit no-underline"
                       >
-                        <span className="text-sm font-medium text-zinc-500">
+                        <span
+                          className="text-sm"
+                          style={{ color: "var(--text-tertiary)" }}
+                        >
                           {item.mallName}
                         </span>
-                        <span className="line-clamp-2 text-base">
+                        <span
+                          className="line-clamp-2 text-base font-normal"
+                          style={{ color: "var(--text-primary)" }}
+                        >
                           {item.title}
                         </span>
-                        <span
-                          className={
-                            item.lprice === lowestPrice
-                              ? "text-lg font-bold text-orange-600"
-                              : "text-lg font-semibold"
-                          }
-                        >
-                          {formatWon(item.lprice)}원
-                          {item.lprice === lowestPrice ? " · 최저" : ""}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2 pt-2">
+                          <span
+                            className="text-2xl font-bold"
+                            style={{ color: "var(--text-primary)" }}
+                          >
+                            {formatWon(item.lprice)}원
+                          </span>
+                          {item.lprice === lowestPrice ? (
+                            <span
+                              className="rounded-lg px-2.5 py-1 text-sm font-semibold"
+                              style={{
+                                background: "var(--accent-soft)",
+                                color: "var(--accent-primary)",
+                              }}
+                            >
+                              최저
+                            </span>
+                          ) : null}
+                        </div>
                       </a>
-                      <div className="border-t border-zinc-100">
+                      <div>
                         {shouldShowMallCardCouponHint(
                           item.mallName,
                           item.link
                         ) ? (
-                          <p className="mb-2 px-4 pt-3 text-xs text-gray-500">
+                          <p
+                            className="mb-2 text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
                             💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
                           </p>
                         ) : null}
@@ -623,7 +1246,8 @@ export default function Home() {
                           href={item.link}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="block w-full px-4 py-3 text-left text-sm font-medium text-blue-600 no-underline transition hover:bg-zinc-50"
+                          className="block w-full text-right text-base font-medium no-underline transition hover:opacity-80"
+                          style={{ color: "var(--accent-primary)" }}
                         >
                           → 쇼핑몰에서 확인하기
                         </a>
@@ -636,24 +1260,60 @@ export default function Home() {
                 href={buildNaverShoppingSearchUrl(extractResult)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-3 flex h-[50px] w-full items-center justify-center rounded-xl bg-[#03C75A] text-base font-medium text-white no-underline transition hover:opacity-90"
+                className="mt-4 flex min-h-14 w-full items-center justify-center rounded-2xl bg-[#03C75A] text-base font-semibold text-white no-underline shadow-md transition duration-200 hover:opacity-95"
               >
                 🔍 네이버 쇼핑에서 더 보기
               </a>
-              <p className="mt-2 text-sm text-zinc-600">
+              <p
+                className="mt-2 text-sm leading-relaxed"
+                style={{ color: "var(--text-secondary)" }}
+              >
                 💡 즉시할인 적용된 실제 결제가는 네이버 쇼핑에서 확인해보세요
               </p>
+
+              <div className="glass-card mt-6 !p-6">
+                <p
+                  className="text-center text-base font-medium"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  쿠팡에서도 확인해보세요
+                </p>
+                <a
+                  href={buildCoupangSearchUrl(extractResult)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-coupang-pill mt-4"
+                >
+                  🛒 쿠팡에서 찾기
+                </a>
+                <p
+                  className="mt-3 text-center text-xs"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  로켓배송 · 와우 멤버십 혜택
+                </p>
+              </div>
             </div>
 
             <button
               type="button"
               onClick={() => void handleShare()}
-              className="min-h-[60px] w-full rounded-2xl bg-[#FFEB3B] px-4 py-3 text-lg font-bold text-black shadow-sm transition hover:brightness-95 active:brightness-90"
+              className="btn-share-pill flex items-center justify-center gap-2"
             >
-              📤 가족·친구에게 공유하기
+              <span className="text-2xl" aria-hidden>
+                📤
+              </span>
+              가족·친구에게 공유하기
             </button>
           </section>
         ) : null}
+
+        <footer
+          className="mt-auto pt-8 pb-8 text-center text-xs leading-relaxed"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          BOGOSA는 쿠팡 파트너스 활동으로 수수료를 지급받을 수 있습니다
+        </footer>
       </main>
 
       {toastMessage != null ? (
