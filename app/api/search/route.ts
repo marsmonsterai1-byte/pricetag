@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  searchProducts as coupangSearchProducts,
+  type CoupangProduct,
+} from "@/lib/coupang";
 
 const NAVER_SHOP_URL = "https://openapi.naver.com/v1/search/shop.json";
+const COUPANG_LIMIT = 5;
 
 function stripBoldTags(title: string): string {
   return title.replace(/<\/?b>/gi, "");
@@ -146,18 +151,100 @@ async function fetchNaverShop(
   return sorted;
 }
 
-export async function GET(request: NextRequest) {
-  try {
-    const clientId = process.env.NAVER_CLIENT_ID?.trim();
-    const clientSecret = process.env.NAVER_CLIENT_SECRET?.trim();
+type NaverResult = {
+  ok: boolean;
+  items: NormalizedItem[];
+};
 
-    if (!clientId || !clientSecret) {
-      return NextResponse.json(
-        { error: "네이버 API 키가 설정되지 않았습니다" },
-        { status: 500 }
-      );
+type CoupangResult = {
+  ok: boolean;
+  products: CoupangProduct[];
+  cheapest: CoupangProduct | null;
+  deepLink: string | null;
+  error?: string;
+};
+
+function getErrorMessage(e: unknown): string {
+  if (e instanceof Error) {
+    return e.message;
+  }
+  if (typeof e === "string") {
+    return e;
+  }
+  return "unknown error";
+}
+
+async function runNaver(
+  primaryQuery: string,
+  fallbackQuery: string,
+  hasExtraTerms: boolean
+): Promise<NaverResult> {
+  const clientId = process.env.NAVER_CLIENT_ID?.trim();
+  const clientSecret = process.env.NAVER_CLIENT_SECRET?.trim();
+
+  if (!clientId || !clientSecret) {
+    console.error("[search] 네이버 API 키 미설정");
+    return { ok: false, items: [] };
+  }
+
+  try {
+    let items = await fetchNaverShop(primaryQuery, clientId, clientSecret);
+    if (items.length === 0 && hasExtraTerms && primaryQuery !== fallbackQuery) {
+      items = await fetchNaverShop(fallbackQuery, clientId, clientSecret);
+    }
+    return { ok: true, items };
+  } catch (e) {
+    console.error("[search] 네이버 호출 실패:", e);
+    return { ok: false, items: [] };
+  }
+}
+
+async function runCoupang(
+  primaryQuery: string,
+  fallbackQuery: string,
+  hasExtraTerms: boolean
+): Promise<CoupangResult> {
+  try {
+    let products = (await coupangSearchProducts(primaryQuery, COUPANG_LIMIT))
+      .filter((p) => p.productPrice > 0);
+
+    if (
+      products.length === 0 &&
+      hasExtraTerms &&
+      primaryQuery !== fallbackQuery
+    ) {
+      products = (await coupangSearchProducts(fallbackQuery, COUPANG_LIMIT))
+        .filter((p) => p.productPrice > 0);
     }
 
+    if (products.length === 0) {
+      return { ok: true, products: [], cheapest: null, deepLink: null };
+    }
+
+    const cheapest = products.reduce((min, p) =>
+      p.productPrice < min.productPrice ? p : min
+    );
+
+    return {
+      ok: true,
+      products,
+      cheapest,
+      deepLink: cheapest.productUrl,
+    };
+  } catch (e) {
+    console.error("[search] 쿠팡 호출 실패:", e);
+    return {
+      ok: false,
+      products: [],
+      cheapest: null,
+      deepLink: null,
+      error: getErrorMessage(e),
+    };
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
     const query = request.nextUrl.searchParams.get("query")?.trim();
     if (!query) {
       return NextResponse.json(
@@ -184,28 +271,43 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    let items: NormalizedItem[];
-    try {
-      items = await fetchNaverShop(primaryQuery, clientId, clientSecret);
-    } catch {
-      return NextResponse.json(
-        { error: "네이버 API 호출에 실패했습니다" },
-        { status: 500 }
-      );
-    }
+    const settled = await Promise.allSettled([
+      runNaver(primaryQuery, query, hasExtraTerms),
+      runCoupang(primaryQuery, query, hasExtraTerms),
+    ]);
 
-    if (items.length === 0 && hasExtraTerms) {
-      try {
-        items = await fetchNaverShop(query, clientId, clientSecret);
-      } catch {
-        return NextResponse.json(
-          { error: "네이버 API 호출에 실패했습니다" },
-          { status: 500 }
-        );
-      }
-    }
+    const naverResult: NaverResult =
+      settled[0].status === "fulfilled"
+        ? settled[0].value
+        : { ok: false, items: [] };
 
-    return NextResponse.json({ items });
+    const coupangResult: CoupangResult =
+      settled[1].status === "fulfilled"
+        ? settled[1].value
+        : {
+            ok: false,
+            products: [],
+            cheapest: null,
+            deepLink: null,
+            error: getErrorMessage(settled[1].reason),
+          };
+
+    return NextResponse.json({
+      items: naverResult.items,
+      naver: { items: naverResult.items },
+      coupang: {
+        products: coupangResult.products,
+        cheapest: coupangResult.cheapest,
+        deepLink: coupangResult.deepLink,
+      },
+      meta: {
+        naverOk: naverResult.ok,
+        coupangOk: coupangResult.ok,
+        ...(coupangResult.error
+          ? { coupangError: coupangResult.error }
+          : {}),
+      },
+    });
   } catch (e) {
     console.error("search route:", e);
     return NextResponse.json(
