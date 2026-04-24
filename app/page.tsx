@@ -291,6 +291,7 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [coupangProducts, setCoupangProducts] = useState<CoupangProduct[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [visibleCount, setVisibleCount] = useState<number>(5);
   const [storePrice, setStorePrice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -552,6 +553,7 @@ export default function Home() {
     setExtractResult(null);
     setSearchResults([]);
     setCoupangProducts([]);
+    setVisibleCount(5);
     setStorePrice("");
     setError("");
     setToastMessage(null);
@@ -606,6 +608,7 @@ export default function Home() {
     setExtractResult(null);
     setSearchResults([]);
     setCoupangProducts([]);
+    setVisibleCount(5);
     setStorePrice("");
     setTipDismissed(false);
 
@@ -636,6 +639,7 @@ export default function Home() {
     setExtractResult(null);
     setSearchResults([]);
     setCoupangProducts([]);
+    setVisibleCount(5);
     setStorePrice("");
     setTipDismissed(false);
     confettiFiredForSessionRef.current = false;
@@ -773,6 +777,7 @@ export default function Home() {
       setExtractResult(null);
       setSearchResults([]);
       setCoupangProducts([]);
+      setVisibleCount(5);
       setStorePrice("");
       setTipDismissed(false);
       setImageBase64("");
@@ -1206,30 +1211,6 @@ export default function Home() {
               </div>
             ) : null}
 
-            <div
-              className="glass-card !p-6"
-              style={{ border: "1px solid rgba(74, 144, 255, 0.2)" }}
-            >
-              <p
-                className="text-sm"
-                style={{ color: "var(--text-tertiary)" }}
-              >
-                온라인 최저 표시가
-              </p>
-              <p
-                className="mt-1 text-4xl font-bold leading-none tracking-[-0.02em] sm:text-[56px]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                {lowestPrice != null ? `${formatWon(lowestPrice)}원` : "—"}
-              </p>
-              <p
-                className="mt-3 text-xs leading-relaxed"
-                style={{ color: "var(--text-tertiary)" }}
-              >
-                쇼핑몰 쿠폰·회원 혜택 적용 시 표시가보다 더 저렴할 수 있어요
-              </p>
-            </div>
-
             <div>
               <label
                 htmlFor="store-price"
@@ -1396,7 +1377,7 @@ export default function Home() {
                 가격 비교
               </p>
               <ul className="flex flex-col gap-4">
-                {sortedSearchResults.map((item, idx) => {
+                {sortedSearchResults.slice(0, visibleCount).map((item, idx) => {
                   const linkRel = item.isCoupang
                     ? "noopener noreferrer sponsored"
                     : "noopener noreferrer";
@@ -1430,6 +1411,17 @@ export default function Home() {
                             >
                               {formatWon(item.lprice)}원
                             </span>
+                            {idx === 0 ? (
+                              <span
+                                className="rounded-lg px-2.5 py-1 text-sm font-semibold"
+                                style={{
+                                  background: "var(--accent-soft)",
+                                  color: "var(--accent-primary)",
+                                }}
+                              >
+                                최저가
+                              </span>
+                            ) : null}
                           </div>
                         </a>
                         <div>
@@ -1454,32 +1446,50 @@ export default function Home() {
                   );
                 })}
               </ul>
-              <a
-                href={
-                  extractResult
-                    ? buildNaverShoppingSearchUrl(extractResult)
-                    : `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(searchQuery)}`
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-4 flex min-h-14 w-full items-center justify-center rounded-[32px] bg-[#03C75A] text-base font-semibold text-white no-underline shadow-md transition duration-200 hover:opacity-95"
-              >
-                🔍 네이버 쇼핑에서 더 보기
-              </a>
-              <p
-                className="mt-2 text-sm leading-relaxed"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                💡 즉시할인 적용된 실제 결제가는 네이버 쇼핑에서 확인해보세요
-              </p>
-
-              <div className="glass-card mt-6 !p-6">
-                <p
-                  className="text-center text-base font-medium"
-                  style={{ color: "var(--text-primary)" }}
+              {visibleCount < sortedSearchResults.length ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVisibleCount((prev) =>
+                      Math.min(prev + 5, sortedSearchResults.length)
+                    )
+                  }
+                  className="mt-4 flex h-12 w-full cursor-pointer items-center justify-center rounded-full border text-sm font-semibold transition"
+                  style={{
+                    background: "rgba(255, 255, 255, 0.7)",
+                    borderColor: "rgba(74, 144, 255, 0.2)",
+                    color: "var(--text-secondary)",
+                    letterSpacing: "-0.015em",
+                  }}
                 >
-                  쿠팡에서도 확인해보세요
+                  더보기
+                </button>
+              ) : null}
+            </div>
+
+            <div className="mt-2 flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <a
+                  href={
+                    extractResult
+                      ? buildNaverShoppingSearchUrl(extractResult)
+                      : `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(searchQuery)}`
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-naver-pill"
+                >
+                  🔍 네이버 쇼핑에서 더 보기
+                </a>
+                <p
+                  className="text-center text-xs leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  💡 즉시할인 적용된 실제 결제가는 네이버 쇼핑에서 확인해보세요
                 </p>
+              </div>
+
+              <div className="flex flex-col gap-2">
                 <a
                   href={
                     extractResult
@@ -1487,32 +1497,40 @@ export default function Home() {
                       : `https://www.coupang.com/np/search?q=${encodeURIComponent(searchQuery)}`
                   }
                   target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-coupang-pill mt-4"
+                  rel="noopener noreferrer sponsored"
+                  className="btn-coupang-pill"
                 >
                   🛒 쿠팡에서 찾기
                 </a>
                 <p
-                  className="mt-3 text-center text-xs"
-                  style={{ color: "var(--text-tertiary)" }}
+                  className="text-center text-xs leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
                 >
                   로켓배송 · 와우 멤버십 혜택
                 </p>
               </div>
-            </div>
 
-            {extractResult ? (
-              <button
-                type="button"
-                onClick={() => void handleShare()}
-                className="btn-share-pill flex items-center justify-center gap-2"
-              >
-                <span className="text-2xl" aria-hidden>
-                  📤
-                </span>
-                가족·친구에게 공유하기
-              </button>
-            ) : null}
+              {extractResult ? (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleShare()}
+                    className="btn-share-pill flex items-center justify-center gap-2"
+                  >
+                    <span className="text-2xl" aria-hidden>
+                      📤
+                    </span>
+                    가족·친구에게 공유하기
+                  </button>
+                  <p
+                    className="text-center text-xs leading-relaxed"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    가격 비교 결과를 카톡으로 보내요
+                  </p>
+                </div>
+              ) : null}
+            </div>
           </section>
         ) : null}
 
