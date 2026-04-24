@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 export interface ExtractResult {
   productCode: string;
@@ -25,6 +31,13 @@ function formatWon(n: number) {
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
 }
 
+function parseItemLprice(n: number): number {
+  if (typeof n === "number" && Number.isFinite(n)) {
+    return Math.max(0, Math.trunc(n));
+  }
+  return 0;
+}
+
 function getPriceCase(
   storePrice: number,
   onlinePrice: number
@@ -43,6 +56,32 @@ function getPriceCase(
 function formatRecognitionLine(r: ExtractResult): string {
   const s = [r.brand, r.productType, r.productCode].filter(Boolean).join(" ");
   return s.trim() || "—";
+}
+
+function buildNaverShoppingSearchUrl(r: ExtractResult): string {
+  const q = [r.brand, r.productCode]
+    .filter((s) => s.trim().length > 0)
+    .map((s) => s.trim())
+    .join(" ");
+  return `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(
+    q || r.productCode
+  )}`;
+}
+
+/** 네이버/스마트스토어 카드는 별도 안내로 이중 표시를 피함 */
+function shouldShowMallCardCouponHint(mallName: string, link: string): boolean {
+  const name = mallName.trim().toLowerCase();
+  if (name === "네이버" || name.includes("스마트스토어")) {
+    return false;
+  }
+  const u = link.toLowerCase();
+  if (
+    u.includes("smartstore.naver.com") ||
+    u.includes("brand.naver.com")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function buildShareText(options: {
@@ -107,13 +146,42 @@ export default function Home() {
   const [error, setError] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
+  const [tipDismissed, setTipDismissed] = useState(false);
   const toastHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const lowestPrice =
-    searchResults.length > 0
-      ? Math.min(...searchResults.map((i) => i.lprice))
-      : null;
+  const { sortedSearchResults, lowestPrice } = useMemo(() => {
+    const withPrices = searchResults.map((item) => ({
+      ...item,
+      lprice: parseItemLprice(item.lprice),
+    }));
+    const pricesBefore = withPrices.map((i) => i.lprice);
+    const sorted = [...withPrices].sort((a, b) => {
+      const ap = a.lprice > 0 ? a.lprice : Number.POSITIVE_INFINITY;
+      const bp = b.lprice > 0 ? b.lprice : Number.POSITIVE_INFINITY;
+      return ap - bp;
+    });
+    const positive = sorted
+      .map((i) => i.lprice)
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const min: number | null =
+      positive.length > 0 ? Math.min(...positive) : null;
+
+    if (process.env.NODE_ENV === "development" && searchResults.length > 0) {
+      console.log(
+        "[pricetag/page] API에서 받은 items 개수:",
+        searchResults.length
+      );
+      console.log(
+        "[pricetag/page] 각 item lprice (정렬 전, 클라이언트 파싱):",
+        pricesBefore
+      );
+      console.log("[pricetag/page] 최저가 계산 결과 (min):", min);
+      console.log("[pricetag/page] 화면에 표시할 온라인 최저가:", min);
+    }
+
+    return { sortedSearchResults: sorted, lowestPrice: min };
+  }, [searchResults]);
 
   const storePriceNum = storePrice.replace(/[^0-9]/g, "")
     ? Number(storePrice.replace(/[^0-9]/g, ""))
@@ -210,6 +278,7 @@ export default function Home() {
     setExtractResult(null);
     setSearchResults([]);
     setStorePrice("");
+    setTipDismissed(false);
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -235,6 +304,7 @@ export default function Home() {
     setExtractResult(null);
     setSearchResults([]);
     setStorePrice("");
+    setTipDismissed(false);
     setLoading(true);
     setLoadingStep("extract");
 
@@ -331,9 +401,48 @@ export default function Home() {
     }
   }, [imageBase64, mimeType]);
 
+  const hasSearchSuccess =
+    extractResult != null && !error && searchResults.length > 0;
+  const showFixedShoppingTip = hasSearchSuccess && !tipDismissed;
+
+  const mainPadClass = !hasSearchSuccess
+    ? "py-8"
+    : tipDismissed
+      ? "pt-6 pb-8"
+      : "pt-28 pb-8";
+
   return (
     <div className="min-h-screen bg-white text-zinc-900">
-      <main className="mx-auto flex max-w-md flex-col gap-6 px-4 py-8">
+      {showFixedShoppingTip ? (
+        <div className="fixed left-0 right-0 top-0 z-40 flex justify-center px-4 pt-3">
+          <div
+            className="flex w-full max-w-[500px] origin-top transform items-start justify-between gap-2 rounded-b-2xl bg-[#FFF3CD] p-3 px-4 shadow-lg transition-all duration-300 ease-out"
+            role="region"
+            aria-label="쇼핑 가격 안내"
+          >
+            <div className="min-w-0 flex-1 pr-1">
+              <p className="text-base font-bold text-zinc-900">
+                💰 들어가보면 더 싸질 수 있어요!
+              </p>
+              <p className="mt-1 text-sm leading-snug text-gray-700">
+                쿠폰·회원할인·카드혜택이 숨어있어요. 링크 들어가서 꼭
+                확인해보세요&nbsp;👀
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTipDismissed(true)}
+              className="min-h-0 min-w-[2.5rem] shrink-0 rounded-lg p-2 text-2xl leading-none text-[#666] transition hover:bg-black/5 hover:opacity-80"
+              aria-label="쇼핑 팁 닫기"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <main
+        className={`mx-auto flex w-full max-w-md flex-col gap-6 px-4 ${mainPadClass} transition-all duration-300 ease-out`}
+      >
         <h1 className="text-center text-2xl font-bold sm:text-3xl">
           사기 전에, 3초만
         </h1>
@@ -403,7 +512,8 @@ export default function Home() {
                 {lowestPrice != null ? `${formatWon(lowestPrice)}원` : "—"}
               </p>
               <p className="mt-1 text-xs text-gray-500">
-                * 쇼핑몰 쿠폰·회원 혜택 적용 시 더 저렴할 수 있어요
+                * 표시된 가격은 기본 판매가예요. 쇼핑몰 들어가면 더 저렴할 수
+                있어요
               </p>
             </div>
 
@@ -474,7 +584,7 @@ export default function Home() {
                 가격 비교
               </p>
               <ul className="flex flex-col gap-3">
-                {searchResults.map((item, idx) => (
+                {sortedSearchResults.map((item, idx) => (
                   <li key={`${item.link}-${idx}`}>
                     <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white transition hover:border-zinc-400">
                       <a
@@ -500,26 +610,38 @@ export default function Home() {
                           {item.lprice === lowestPrice ? " · 최저" : ""}
                         </span>
                       </a>
-                      <a
-                        href={item.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block w-full border-t border-zinc-100 px-4 py-3 text-left text-sm font-medium text-blue-600 no-underline transition hover:bg-zinc-50"
-                      >
-                        → 쇼핑몰에서 확인하기
-                      </a>
+                      <div className="border-t border-zinc-100">
+                        {shouldShowMallCardCouponHint(
+                          item.mallName,
+                          item.link
+                        ) ? (
+                          <p className="mb-2 px-4 pt-3 text-xs text-gray-500">
+                            💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
+                          </p>
+                        ) : null}
+                        <a
+                          href={item.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block w-full px-4 py-3 text-left text-sm font-medium text-blue-600 no-underline transition hover:bg-zinc-50"
+                        >
+                          → 쇼핑몰에서 확인하기
+                        </a>
+                      </div>
                     </div>
                   </li>
                 ))}
               </ul>
-            </div>
-
-            <div className="rounded-xl bg-yellow-50 p-4 text-sm leading-relaxed text-zinc-800">
-              <p className="mb-2 font-semibold text-zinc-900">💡 쇼핑 팁</p>
-              <p>
-                각 쇼핑몰은 회원 쿠폰, 카드 할인, 첫구매 혜택 등으로 표시가보다
-                더 저렴할 수 있어요. 링크로 들어가 실제 결제 가격을
-                확인해보세요.
+              <a
+                href={buildNaverShoppingSearchUrl(extractResult)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 flex h-[50px] w-full items-center justify-center rounded-xl bg-[#03C75A] text-base font-medium text-white no-underline transition hover:opacity-90"
+              >
+                🔍 네이버 쇼핑에서 더 보기
+              </a>
+              <p className="mt-2 text-sm text-zinc-600">
+                💡 즉시할인 적용된 실제 결제가는 네이버 쇼핑에서 확인해보세요
               </p>
             </div>
 
