@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ExtractResult {
   productCode: string;
+  brand: string;
+  productType: string;
   price: number | null;
 }
 
@@ -15,22 +17,46 @@ type SearchItem = {
   image: string;
 };
 
+const SIMILAR_THRESHOLD = 10_000;
+
+type PriceCase = "online_cheaper" | "similar" | "store_cheaper";
+
 function formatWon(n: number) {
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
 }
 
+function getPriceCase(
+  storePrice: number,
+  onlinePrice: number
+): { priceCase: PriceCase; absDiff: number; diff: number } {
+  const diff = storePrice - onlinePrice;
+  const absDiff = Math.abs(diff);
+  if (absDiff <= SIMILAR_THRESHOLD) {
+    return { priceCase: "similar", absDiff, diff };
+  }
+  if (diff > 0) {
+    return { priceCase: "online_cheaper", absDiff, diff };
+  }
+  return { priceCase: "store_cheaper", absDiff, diff };
+}
+
+function formatRecognitionLine(r: ExtractResult): string {
+  const s = [r.brand, r.productType, r.productCode].filter(Boolean).join(" ");
+  return s.trim() || "—";
+}
+
 function buildShareText(options: {
-  productCode: string;
+  extract: ExtractResult;
   storePriceNum: number | null;
   lowestPrice: number | null;
   origin: string;
 }): string {
-  const { productCode, storePriceNum, lowestPrice, origin } = options;
+  const { extract, storePriceNum, lowestPrice, origin } = options;
   const lines: string[] = [
     "━━━━━━━━━━━━━━━━",
     "🔍 PriceTag로 확인한 가격 비교",
     "",
-    `📌 ${productCode || "—"}`,
+    `📌 ${formatRecognitionLine(extract)}`,
   ];
 
   const hasStorePrice =
@@ -44,14 +70,18 @@ function buildShareText(options: {
     lines.push(`✨ 온라인 최저: ${formatWon(lowestPrice)}원`);
   }
 
-  const savingsAmount =
-    hasStorePrice && lowestPrice != null && storePriceNum > lowestPrice
-      ? storePriceNum - lowestPrice
-      : null;
-
-  if (savingsAmount != null && savingsAmount > 0) {
+  if (hasStorePrice && lowestPrice != null) {
+    const { priceCase, absDiff } = getPriceCase(storePriceNum, lowestPrice);
     lines.push("");
-    lines.push(`🎉 최소 ${formatWon(savingsAmount)}원 아낄 수 있어요!`);
+    if (priceCase === "online_cheaper") {
+      lines.push(`🎉 최소 ${formatWon(absDiff)}원 아낄 수 있어요!`);
+    } else if (priceCase === "similar") {
+      lines.push(
+        `😐 매장과 온라인 가격이 비슷해요 (차이 ${formatWon(absDiff)}원)`
+      );
+    } else {
+      lines.push(`💪 매장이 ${formatWon(absDiff)}원 더 싸요!`);
+    }
   }
 
   lines.push("");
@@ -89,11 +119,14 @@ export default function Home() {
     ? Number(storePrice.replace(/[^0-9]/g, ""))
     : null;
 
-  const savings =
-    lowestPrice != null &&
+  const hasStorePriceForCompare =
     storePriceNum != null &&
-    storePriceNum > lowestPrice
-      ? storePriceNum - lowestPrice
+    Number.isFinite(storePriceNum) &&
+    storePriceNum > 0;
+
+  const priceCompare =
+    hasStorePriceForCompare && lowestPrice != null
+      ? getPriceCase(storePriceNum, lowestPrice)
       : null;
 
   const showToast = useCallback((message: string) => {
@@ -141,7 +174,7 @@ export default function Home() {
       return;
     }
     const shareText = buildShareText({
-      productCode: extractResult.productCode,
+      extract: extractResult,
       storePriceNum,
       lowestPrice,
       origin: typeof window !== "undefined" ? window.location.origin : "",
@@ -230,12 +263,23 @@ export default function Home() {
         typeof extractJson.productCode === "string"
           ? extractJson.productCode.trim()
           : "";
+      const brand =
+        typeof extractJson.brand === "string" ? extractJson.brand.trim() : "";
+      const productType =
+        typeof extractJson.productType === "string"
+          ? extractJson.productType.trim()
+          : "";
       const priceFromTag =
         typeof extractJson.price === "number" && Number.isFinite(extractJson.price)
           ? extractJson.price
           : null;
 
-      setExtractResult({ productCode, price: priceFromTag });
+      setExtractResult({
+        productCode,
+        brand,
+        productType,
+        price: priceFromTag,
+      });
 
       if (!productCode) {
         setError("태그가 잘 보이게 다시 찍어주세요");
@@ -247,9 +291,15 @@ export default function Home() {
       }
 
       setLoadingStep("search");
-      const searchRes = await fetch(
-        `/api/search?query=${encodeURIComponent(productCode)}`
-      );
+      const searchParams = new URLSearchParams();
+      searchParams.set("query", productCode);
+      if (brand) {
+        searchParams.set("brand", brand);
+      }
+      if (productType) {
+        searchParams.set("productType", productType);
+      }
+      const searchRes = await fetch(`/api/search?${searchParams.toString()}`);
 
       if (!searchRes.ok) {
         setError("일시적 오류, 다시 시도");
@@ -337,9 +387,8 @@ export default function Home() {
         {extractResult && !error && searchResults.length > 0 ? (
           <section className="flex flex-col gap-4">
             <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-              <p className="text-sm text-zinc-500">인식 결과</p>
-              <p className="text-lg font-semibold">
-                {extractResult.productCode || "—"}
+              <p className="text-lg font-semibold leading-snug">
+                인식 결과: {formatRecognitionLine(extractResult)}
               </p>
               {extractResult.price !== null ? (
                 <p className="mt-2 text-xs text-gray-500">
@@ -379,14 +428,45 @@ export default function Home() {
               />
             </div>
 
-            {savings != null && savings > 0 ? (
-              <div className="rounded-xl bg-green-100 px-4 py-4 text-center text-xl text-green-900">
-                <span className="font-black">최소</span>
-                <span className="font-bold">
-                  {" "}
-                  {formatWon(savings)}원 아낄 수 있어요
-                </span>
-              </div>
+            {priceCompare ? (
+              priceCompare.priceCase === "online_cheaper" ? (
+                <div
+                  className="rounded-2xl px-5 py-5 text-center"
+                  style={{ backgroundColor: "#D4EDDA" }}
+                >
+                  <p className="text-lg font-bold text-green-900 sm:text-xl">
+                    🎉 최소 {formatWon(priceCompare.absDiff)}원 아낄 수 있어요
+                  </p>
+                  <p className="mt-2 text-sm text-gray-600">
+                    → 아래 쇼핑몰에서 더 싸게 구매하세요
+                  </p>
+                </div>
+              ) : priceCompare.priceCase === "similar" ? (
+                <div
+                  className="rounded-2xl px-5 py-5 text-center"
+                  style={{ backgroundColor: "#FFF3CD" }}
+                >
+                  <p className="text-lg font-bold text-zinc-900 sm:text-xl">
+                    😐 비슷한 가격이에요
+                  </p>
+                  <p className="mt-2 text-sm text-gray-600">
+                    차이 {formatWon(priceCompare.absDiff)}원 / 매장에서 바로
+                    구매하셔도 손해 없어요
+                  </p>
+                </div>
+              ) : (
+                <div
+                  className="rounded-2xl px-5 py-5 text-center"
+                  style={{ backgroundColor: "#D1ECF1" }}
+                >
+                  <p className="text-lg font-bold text-cyan-950 sm:text-xl">
+                    💪 매장이 {formatWon(priceCompare.absDiff)}원 더 싸네요!
+                  </p>
+                  <p className="mt-2 text-sm text-gray-600">
+                    → 매장에서 구매하시는 게 이득이에요
+                  </p>
+                </div>
+              )
             ) : null}
 
             <div>
