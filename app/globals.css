@@ -117,6 +117,51 @@ main,
     0 12px 32px -8px rgba(20, 30, 50, 0.1);
 }
 
+/* 메인 페이지 — 상품명/코드 수동 검색 바 (업로드 박스와 동일 글래스) */
+.manual-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 72px;
+  padding: 0 24px;
+  border-radius: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.18);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    0 1px 2px rgba(20, 30, 50, 0.05),
+    0 12px 32px -8px rgba(20, 30, 50, 0.1);
+}
+
+.manual-search-bar > svg {
+  flex-shrink: 0;
+  color: #7a8595;
+}
+
+.manual-search-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: inherit;
+  letter-spacing: -0.015em;
+}
+
+.manual-search-bar input::placeholder {
+  color: #9ca3af;
+}
+
+.manual-search-bar input:disabled {
+  cursor: not-allowed;
+}
+
 /* 업로드 후 미리보기 카드 (업로드 박스와 동일 글래스) */
 .upload-preview-card {
   position: relative;

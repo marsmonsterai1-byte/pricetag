@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { CoupangProduct } from "@/lib/coupang";
 
 export interface ExtractResult {
   productCode: string;
@@ -23,6 +24,15 @@ type SearchItem = {
   mallName: string;
   link: string;
   image: string;
+};
+
+type MergedItem = {
+  title: string;
+  lprice: number;
+  mallName: string;
+  link: string;
+  image: string;
+  isCoupang?: boolean;
 };
 
 const SIMILAR_THRESHOLD = 10_000;
@@ -264,6 +274,8 @@ export default function Home() {
     null
   );
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [coupangProducts, setCoupangProducts] = useState<CoupangProduct[]>([]);
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [storePrice, setStorePrice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -278,12 +290,20 @@ export default function Home() {
   const confettiIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { sortedSearchResults, lowestPrice } = useMemo(() => {
-    const withPrices = searchResults.map((item) => ({
+    const naverMapped: MergedItem[] = searchResults.map((item) => ({
       ...item,
       lprice: parseItemLprice(item.lprice),
     }));
-    const pricesBefore = withPrices.map((i) => i.lprice);
-    const sorted = [...withPrices].sort((a, b) => {
+    const coupangMapped: MergedItem[] = coupangProducts.map((p) => ({
+      title: p.productName,
+      lprice: parseItemLprice(p.productPrice),
+      mallName: p.isRocket ? "쿠팡 로켓배송" : "쿠팡",
+      link: p.productUrl,
+      image: p.productImage,
+      isCoupang: true,
+    }));
+    const merged: MergedItem[] = [...naverMapped, ...coupangMapped];
+    const sorted = [...merged].sort((a, b) => {
       const ap = a.lprice > 0 ? a.lprice : Number.POSITIVE_INFINITY;
       const bp = b.lprice > 0 ? b.lprice : Number.POSITIVE_INFINITY;
       return ap - bp;
@@ -294,21 +314,24 @@ export default function Home() {
     const min: number | null =
       positive.length > 0 ? Math.min(...positive) : null;
 
-    if (process.env.NODE_ENV === "development" && searchResults.length > 0) {
+    if (
+      process.env.NODE_ENV === "development" &&
+      (searchResults.length > 0 || coupangProducts.length > 0)
+    ) {
       console.log(
-        "[pricetag/page] API에서 받은 items 개수:",
-        searchResults.length
+        "[pricetag/page] 통합 items 개수:",
+        sorted.length,
+        "(네이버:",
+        naverMapped.length,
+        "쿠팡:",
+        coupangMapped.length,
+        ")"
       );
-      console.log(
-        "[pricetag/page] 각 item lprice (정렬 전, 클라이언트 파싱):",
-        pricesBefore
-      );
-      console.log("[pricetag/page] 최저가 계산 결과 (min):", min);
-      console.log("[pricetag/page] 화면에 표시할 온라인 최저가:", min);
+      console.log("[pricetag/page] 통합 최저가:", min);
     }
 
     return { sortedSearchResults: sorted, lowestPrice: min };
-  }, [searchResults]);
+  }, [searchResults, coupangProducts]);
 
   const storePriceNum = storePrice.replace(/[^0-9]/g, "")
     ? Number(storePrice.replace(/[^0-9]/g, ""))
@@ -512,6 +535,7 @@ export default function Home() {
     setLoadingStep(null);
     setExtractResult(null);
     setSearchResults([]);
+    setCoupangProducts([]);
     setStorePrice("");
     setError("");
     setToastMessage(null);
@@ -565,6 +589,7 @@ export default function Home() {
     setError("");
     setExtractResult(null);
     setSearchResults([]);
+    setCoupangProducts([]);
     setStorePrice("");
     setTipDismissed(false);
 
@@ -594,6 +619,7 @@ export default function Home() {
     setError("");
     setExtractResult(null);
     setSearchResults([]);
+    setCoupangProducts([]);
     setStorePrice("");
     setTipDismissed(false);
     confettiFiredForSessionRef.current = false;
@@ -672,6 +698,16 @@ export default function Home() {
       const searchJson = (await searchRes.json()) as {
         items?: SearchItem[];
         error?: string;
+        coupang?: {
+          products: CoupangProduct[];
+          cheapest: CoupangProduct | null;
+          deepLink: string | null;
+        };
+        meta?: {
+          naverOk: boolean;
+          coupangOk: boolean;
+          coupangError?: string;
+        };
       };
 
       if ("error" in searchJson && searchJson.error) {
@@ -686,6 +722,14 @@ export default function Home() {
       }
 
       setSearchResults(items);
+      if (
+        searchJson.meta?.coupangOk &&
+        Array.isArray(searchJson.coupang?.products)
+      ) {
+        setCoupangProducts(searchJson.coupang.products);
+      } else {
+        setCoupangProducts([]);
+      }
       analysisSucceededWithItems = true;
     } catch {
       setError("일시적 오류, 다시 시도");
@@ -698,8 +742,92 @@ export default function Home() {
     }
   }, [imageBase64, mimeType]);
 
-  const hasSearchSuccess =
-    extractResult != null && !error && searchResults.length > 0;
+  const runManualSearch = useCallback(
+    async (rawQuery: string) => {
+      const query = rawQuery.trim();
+      if (!query || loading) {
+        return;
+      }
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[search] manual query:", query);
+      }
+
+      setError("");
+      setExtractResult(null);
+      setSearchResults([]);
+      setCoupangProducts([]);
+      setStorePrice("");
+      setTipDismissed(false);
+      setImageBase64("");
+      setMimeType("");
+      setPreviewUrl("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      confettiFiredForSessionRef.current = false;
+      setConfettiTick((t) => t + 1);
+      setLoading(true);
+      setLoadingStep("search");
+
+      try {
+        const searchParams = new URLSearchParams();
+        searchParams.set("query", query);
+        const searchRes = await fetch(
+          `/api/search?${searchParams.toString()}`
+        );
+
+        if (!searchRes.ok) {
+          setError("일시적 오류, 다시 시도");
+          return;
+        }
+
+        const searchJson = (await searchRes.json()) as {
+          items?: SearchItem[];
+          error?: string;
+          coupang?: {
+            products: CoupangProduct[];
+            cheapest: CoupangProduct | null;
+            deepLink: string | null;
+          };
+          meta?: {
+            naverOk: boolean;
+            coupangOk: boolean;
+            coupangError?: string;
+          };
+        };
+
+        if ("error" in searchJson && searchJson.error) {
+          setError("일시적 오류, 다시 시도");
+          return;
+        }
+
+        const items = Array.isArray(searchJson.items) ? searchJson.items : [];
+        if (items.length === 0) {
+          setError("온라인에서 찾을 수 없는 상품");
+          return;
+        }
+
+        setSearchResults(items);
+        if (
+          searchJson.meta?.coupangOk &&
+          Array.isArray(searchJson.coupang?.products)
+        ) {
+          setCoupangProducts(searchJson.coupang.products);
+        } else {
+          setCoupangProducts([]);
+        }
+      } catch {
+        setError("일시적 오류, 다시 시도");
+      } finally {
+        setLoading(false);
+        setLoadingStep(null);
+      }
+    },
+    [loading]
+  );
+
+  const hasSearchSuccess = !error && searchResults.length > 0;
   const showFixedShoppingTip = hasSearchSuccess && !tipDismissed;
 
   const mainPadClass = !hasSearchSuccess
@@ -864,15 +992,72 @@ export default function Home() {
           </div>
         ) : null}
 
+        <div className="flex w-full flex-col gap-2">
+          <p
+            className="text-center text-xs"
+            style={{
+              color: "var(--text-tertiary)",
+              letterSpacing: "-0.015em",
+            }}
+          >
+            또는 상품명으로 검색
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runManualSearch(searchQuery);
+            }}
+            className="manual-search-bar w-full"
+          >
+            <svg
+              width={22}
+              height={22}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <circle cx={11} cy={11} r={7} />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              type="search"
+              inputMode="search"
+              enterKeyHint="search"
+              aria-label="상품명 또는 코드로 검색"
+              placeholder="상품명 또는 코드"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              disabled={loading}
+            />
+          </form>
+        </div>
+
         {showCompareCta ? (
           <button
             type="button"
-            onClick={runAnalyze}
-            disabled={loading || !imageBase64}
+            onClick={() => {
+              if (loading) {
+                return;
+              }
+              if (imageBase64) {
+                void runAnalyze();
+              } else if (searchQuery.trim()) {
+                void runManualSearch(searchQuery);
+              }
+            }}
+            disabled={
+              loading || (!imageBase64 && !searchQuery.trim())
+            }
             className="analyze-button"
             style={{
               background:
-                loading || !imageBase64 ? "#D5DBE3" : "#4493FF",
+                loading || (!imageBase64 && !searchQuery.trim())
+                  ? "#D5DBE3"
+                  : "#4493FF",
               borderRadius: "32px",
               height: "64px",
               width: "100%",
@@ -882,7 +1067,9 @@ export default function Home() {
               fontSize: "18px",
               fontWeight: 700,
               cursor:
-                loading || !imageBase64 ? "not-allowed" : "pointer",
+                loading || (!imageBase64 && !searchQuery.trim())
+                  ? "not-allowed"
+                  : "pointer",
               transition: "all 0.15s ease",
             }}
           >
@@ -925,77 +1112,81 @@ export default function Home() {
           </div>
         ) : null}
 
-        {extractResult && !error && searchResults.length > 0 ? (
+        {!error && searchResults.length > 0 ? (
           <section className="flex flex-col gap-4 sm:gap-6">
-            <div className="glass-card !p-6">
-              <p
-                className="text-sm"
-                style={{ color: "var(--text-tertiary)" }}
-              >
-                인식 결과
-              </p>
-              <p
-                className="mt-1 text-xl font-medium leading-snug"
-                style={{ color: "var(--text-primary)" }}
-              >
-                {formatBrandTypeLine(extractResult)}
-              </p>
-              {(() => {
-                const productCode = extractResult.productCode?.trim() ?? "";
-                return (
-                  <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
-                    <h2
-                      className={
-                        productCode
-                          ? "min-w-0 flex-1 cursor-pointer text-[28px] font-bold leading-tight"
-                          : "min-w-0 flex-1 text-[28px] font-bold leading-tight"
-                      }
-                      onClick={productCode ? handleCopyProductCode : undefined}
-                      onKeyDown={
-                        productCode
-                          ? (e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                void handleCopyProductCode();
-                              }
-                            }
-                          : undefined
-                      }
-                      tabIndex={productCode ? 0 : undefined}
-                      aria-label={
-                        productCode
-                          ? `품번 ${productCode}, 클릭하여 복사`
-                          : undefined
-                      }
-                      style={{
-                        color: "var(--text-primary)",
-                        wordBreak: "break-all",
-                      }}
-                    >
-                      {productCode || "—"}
-                    </h2>
-                    {productCode ? (
-                      <button
-                        type="button"
-                        onClick={handleCopyProductCode}
-                        className="copy-button"
-                        aria-label="품번 복사"
-                      >
-                        복사
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })()}
-              {extractResult.price !== null ? (
+            {extractResult ? (
+              <div className="glass-card !p-6">
                 <p
-                  className="mt-4 text-xs"
+                  className="text-sm"
                   style={{ color: "var(--text-tertiary)" }}
                 >
-                  💡 태그에서 가격 자동 입력됨 — 다르면 아래에서 수정하세요
+                  인식 결과
                 </p>
-              ) : null}
-            </div>
+                <p
+                  className="mt-1 text-xl font-medium leading-snug"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  {formatBrandTypeLine(extractResult)}
+                </p>
+                {(() => {
+                  const productCode = extractResult.productCode?.trim() ?? "";
+                  return (
+                    <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
+                      <h2
+                        className={
+                          productCode
+                            ? "min-w-0 flex-1 cursor-pointer text-[28px] font-bold leading-tight"
+                            : "min-w-0 flex-1 text-[28px] font-bold leading-tight"
+                        }
+                        onClick={
+                          productCode ? handleCopyProductCode : undefined
+                        }
+                        onKeyDown={
+                          productCode
+                            ? (e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  void handleCopyProductCode();
+                                }
+                              }
+                            : undefined
+                        }
+                        tabIndex={productCode ? 0 : undefined}
+                        aria-label={
+                          productCode
+                            ? `품번 ${productCode}, 클릭하여 복사`
+                            : undefined
+                        }
+                        style={{
+                          color: "var(--text-primary)",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {productCode || "—"}
+                      </h2>
+                      {productCode ? (
+                        <button
+                          type="button"
+                          onClick={handleCopyProductCode}
+                          className="copy-button"
+                          aria-label="품번 복사"
+                        >
+                          복사
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+                {extractResult.price !== null ? (
+                  <p
+                    className="mt-4 text-xs"
+                    style={{ color: "var(--text-tertiary)" }}
+                  >
+                    💡 태그에서 가격 자동 입력됨 — 다르면 아래에서 수정하세요
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             <div
               className="glass-card !p-6"
@@ -1187,72 +1378,70 @@ export default function Home() {
                 가격 비교
               </p>
               <ul className="flex flex-col gap-4">
-                {sortedSearchResults.map((item, idx) => (
-                  <li key={`${item.link}-${idx}`}>
-                    <div
-                      className="glass-card !p-5 transition duration-200 ease-out hover:[box-shadow:var(--glass-shadow-hover)]"
-                    >
-                      <a
-                        href={item.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mb-3 flex w-full flex-col gap-1.5 text-left text-inherit no-underline"
+                {sortedSearchResults.map((item, idx) => {
+                  const linkRel = item.isCoupang
+                    ? "noopener noreferrer sponsored"
+                    : "noopener noreferrer";
+                  return (
+                    <li key={`${item.link}-${idx}`}>
+                      <div
+                        className="glass-card !p-5 transition duration-200 ease-out hover:[box-shadow:var(--glass-shadow-hover)]"
                       >
-                        <span
-                          className="text-sm"
-                          style={{ color: "var(--text-tertiary)" }}
-                        >
-                          {item.mallName}
-                        </span>
-                        <span
-                          className="line-clamp-2 text-base font-normal"
-                          style={{ color: "var(--text-primary)" }}
-                        >
-                          {item.title}
-                        </span>
-                        <div className="flex flex-wrap items-center gap-2 pt-2">
-                          <span
-                            className="text-2xl font-bold"
-                            style={{ color: "var(--text-primary)" }}
-                          >
-                            {formatWon(item.lprice)}원
-                          </span>
-                          {item.lprice === lowestPrice ? (
-                            <span
-                              className="rounded-lg px-2.5 py-1 text-sm font-semibold"
-                              style={{
-                                background: "var(--accent-soft)",
-                                color: "var(--accent-primary)",
-                              }}
-                            >
-                              최저
-                            </span>
-                          ) : null}
-                        </div>
-                      </a>
-                      <div>
-                        <p
-                          className="mb-2 text-xs"
-                          style={{ color: "var(--text-tertiary)" }}
-                        >
-                          💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
-                        </p>
                         <a
                           href={item.link}
                           target="_blank"
-                          rel="noopener noreferrer"
-                          className="block w-full text-right text-base font-medium no-underline transition hover:opacity-80"
-                          style={{ color: "var(--accent-primary)" }}
+                          rel={linkRel}
+                          className="mb-3 flex w-full flex-col gap-1.5 text-left text-inherit no-underline"
                         >
-                          → 쇼핑몰에서 확인하기
+                          <span
+                            className="text-sm"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            {item.mallName}
+                          </span>
+                          <span
+                            className="line-clamp-2 text-base font-normal"
+                            style={{ color: "var(--text-primary)" }}
+                          >
+                            {item.title}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 pt-2">
+                            <span
+                              className="text-2xl font-bold"
+                              style={{ color: "var(--text-primary)" }}
+                            >
+                              {formatWon(item.lprice)}원
+                            </span>
+                          </div>
                         </a>
+                        <div>
+                          <p
+                            className="mb-2 text-xs"
+                            style={{ color: "var(--text-tertiary)" }}
+                          >
+                            💡 쿠폰·할인 적용 시 더 저렴할 수 있어요
+                          </p>
+                          <a
+                            href={item.link}
+                            target="_blank"
+                            rel={linkRel}
+                            className="block w-full text-right text-base font-medium no-underline transition hover:opacity-80"
+                            style={{ color: "var(--accent-primary)" }}
+                          >
+                            → 쇼핑몰에서 확인하기
+                          </a>
+                        </div>
                       </div>
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
               <a
-                href={buildNaverShoppingSearchUrl(extractResult)}
+                href={
+                  extractResult
+                    ? buildNaverShoppingSearchUrl(extractResult)
+                    : `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(searchQuery)}`
+                }
                 target="_blank"
                 rel="noopener noreferrer"
                 className="mt-4 flex min-h-14 w-full items-center justify-center rounded-2xl bg-[#03C75A] text-base font-semibold text-white no-underline shadow-md transition duration-200 hover:opacity-95"
@@ -1274,7 +1463,11 @@ export default function Home() {
                   쿠팡에서도 확인해보세요
                 </p>
                 <a
-                  href={buildCoupangSearchUrl(extractResult)}
+                  href={
+                    extractResult
+                      ? buildCoupangSearchUrl(extractResult)
+                      : `https://www.coupang.com/np/search?q=${encodeURIComponent(searchQuery)}`
+                  }
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn-coupang-pill mt-4"
@@ -1290,16 +1483,18 @@ export default function Home() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void handleShare()}
-              className="btn-share-pill flex items-center justify-center gap-2"
-            >
-              <span className="text-2xl" aria-hidden>
-                📤
-              </span>
-              가족·친구에게 공유하기
-            </button>
+            {extractResult ? (
+              <button
+                type="button"
+                onClick={() => void handleShare()}
+                className="btn-share-pill flex items-center justify-center gap-2"
+              >
+                <span className="text-2xl" aria-hidden>
+                  📤
+                </span>
+                가족·친구에게 공유하기
+              </button>
+            ) : null}
           </section>
         ) : null}
 
