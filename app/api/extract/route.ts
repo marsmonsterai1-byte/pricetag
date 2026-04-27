@@ -2,33 +2,82 @@ import { NextRequest, NextResponse } from "next/server";
 
 const KIE_MESSAGES_PATH = "/claude/v1/messages";
 
-const EXTRACTION_PROMPT = `이 상품 태그 사진에서 다음 정보를 정확히 추출해주세요:
-1. 품번/모델번호 (예: EY145AKO, NWSLPK0400, AB-1234)
-2. 브랜드명 (예: 테팔, 나이키, 삼성, LG)
-3. 제품 종류 (예: 에어프라이어, 운동화, TV, 청소기, 슬랙스)
-4. 가격 (원화, 숫자만)
+const EXTRACTION_PROMPT = `당신은 상품 사진에서 검색에 필요한 정보만 추출하는 시스템입니다.
+사진은 의류 태그, 식품·생활용품 라벨, 화장품 패키지, 전자제품 박스, 가전 본체 등 어떤 카테고리든 올 수 있습니다.
 
-⚠️ 품번 추출 시 매우 중요한 주의사항:
-- 알파벳 'O'(오)와 숫자 '0'(영)을 정확히 구분하세요. 일반적으로 영문 모델번호의 끝글자가 'O'인 경우가 많습니다.
-- 알파벳 'Y'와 'V'를 정확히 구분하세요. 둘은 비슷해 보이지만 다른 글자입니다.
-- 알파벳 'I'(아이)와 숫자 '1'(일)을 구분하세요.
-- 알파벳 'B'와 숫자 '8'을 구분하세요.
-- 알파벳 'S'와 숫자 '5'를 구분하세요.
-- 바코드 아래의 긴 숫자(보통 13자리)는 품번이 아닙니다. 품번은 보통 알파벳+숫자 조합입니다.
-- 품번이 명확하지 않으면 가장 가능성 높은 것 하나만 선택하세요.
+다음 6가지 정보를 JSON으로 추출하세요:
 
-반드시 아래 JSON 형식으로만 응답하세요. 다른 설명 절대 금지:
+1. brand — 브랜드명
+   - 라벨에 영문이면 영문 그대로, 한글이면 한글 그대로. 번역하지 말 것.
+   - 예: "Nike" / "나이키" / "Snuggle" / "스너글" / "Apple" / "Dyson" / "에스티 로더" / "농심"
+
+2. modelName — 모델명 / 제품명
+   우선순위로 판단:
+   - 1순위: 검색창에 입력하면 해당 상품이 나오는, 사람이 부르는 이름 (예: "Blue Sparkle Plus", "에어 포스 1")
+   - 2순위: brand 다음으로 큰 글씨로 적힌 라인·시리즈 이름.
+     브랜드명 자체는 절대 modelName 에 넣지 말 것 — 예: 스너글 라벨에서 "스너글" 은 brand 이고 "Blue Sparkle Plus" 가 modelName.
+   - 3순위: 그래도 모호하면 빈 문자열.
+   - 예: "에어 포스 1"(신발) / "덩크 로우"(신발) / "Blue Sparkle Plus"(생활) / "진라면 매운맛"(식품) / "Advanced Night Repair"(화장품) / "iPhone 15 Pro 256GB"(전자) / "V11 Absolute"(가전)
+
+3. productCode — 제품 코드 / 스타일 코드 / 모델 번호
+   - 영문+숫자 조합 SKU. 의류·전자제품엔 흔하고, 식품·생활용품·화장품엔 거의 없음.
+   - 예: "NWSLPK0400" / "FD1886-010" / "A2891" / "EY145AKO"
+   - 없거나 안 보이면 빈 문자열.
+
+4. productType — 상품 카테고리
+   - 1~2 단어로 표현되는 일반 카테고리.
+   - 예: "슬랙스"(의류) / "섬유유연제"(생활) / "라면"(식품) / "세럼"(화장품) / "스마트폰"(전자) / "무선청소기"(가전) / "에어프라이어"(가전)
+
+5. price — 가격
+   - 라벨에 적힌 가격. 숫자만 (쉼표·"원" 제거).
+   - 여러 개면 가장 큰 숫자(정가) 선택.
+   - 안 보이면 빈 문자열.
+
+6. barcode — 바코드 숫자 (EAN-13 또는 UPC-12)
+   - 바코드 막대 아래에 적힌 12자리 또는 13자리 숫자.
+   - 예: "8801619944349" / "041234567890"
+   - 한국 상품은 보통 13자리이며 880 또는 88 로 시작.
+   - 안 보이거나 불완전하면 빈 문자열.
+   - ⚠️ barcode 는 brand / modelName / productCode 와 별개 필드. 같은 숫자를 productCode 에 넣지 말 것.
+
+⚠️ 무시할 것 (사진에 있어도 추출하지 마세요):
+- 사용법, 사용 방법, How to use
+- 주의사항, 경고, 보관 방법, 세탁 방법
+- 성분, 원재료, 영양정보, 알레르기 정보
+- 광고 카피 ("프리미엄", "최고의", "신상품", "한정")
+- 제조원, 판매원, 수입원, 주소, 전화번호
+- KC 인증, 정격전압, 소비전력, 안전기준 표시
+- 사진 배경의 잡지·포스터·다른 상품 정보
+
+⚠️ 가전 본체 라벨 케이스:
+- 가전 본체 사진의 라벨에서 모델명을 못 찾으면 modelName 은 빈 문자열.
+- 정격전압 / 소비전력 / 제조번호 / 시리얼 번호를 modelName 에 넣지 말 것.
+
+⚠️ 코드/번호 OCR 시 혼동문자 주의:
+- 알파벳 'O'(오) ↔ 숫자 '0'(영) — 영문 SKU 끝글자가 'O'인 경우가 많음
+- 알파벳 'Y' ↔ 'V'
+- 알파벳 'I'(아이) ↔ 숫자 '1'(일)
+- 알파벳 'B' ↔ 숫자 '8'
+- 알파벳 'S' ↔ 숫자 '5'
+
+⚠️ 추측 금지:
+- 글자가 흐리거나 잘려서 확실하지 않으면 빈 문자열
+- 라벨에 없는 정보를 "이런 상품엔 보통 이런 게 있다"는 식으로 추측하지 말 것
+- 부분만 보이는 코드는 빈 문자열 (잘못된 코드는 빈 결과보다 나쁨)
+
+⚠️ 출력 형식:
+- markdown 코드 블록 (\`\`\`) 으로 감싸지 말 것
+- 다른 설명·인사·코멘트 금지
+- 아래 JSON 객체 그대로만 응답
+
 {
-  "productCode": "품번 (없으면 빈 문자열)",
-  "brand": "브랜드명 (없으면 빈 문자열)",
-  "productType": "제품 종류 (없으면 빈 문자열)",
-  "price": 숫자 또는 null
-}
-
-규칙:
-- 가격이 여러 개면 가장 큰 숫자 선택 (정가 우선)
-- 가격에서 쉼표, '원' 제거하고 숫자만 반환
-- 가격이 안 보이거나 불확실하면 null`;
+  "brand": "",
+  "modelName": "",
+  "productCode": "",
+  "productType": "",
+  "price": "",
+  "barcode": ""
+}`;
 
 function normalizePrice(value: unknown): number | null {
   if (value === null || value === undefined) {
@@ -62,6 +111,18 @@ function normalizeLabelField(value: unknown): string {
   return value.trim();
 }
 
+/** 바코드 숫자만 남기고 12 또는 13자리만 통과. 그 외는 잘못 인식한 것으로 간주. */
+function normalizeBarcode(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return "";
+  }
+  const digits = String(value).replace(/[^\d]/g, "");
+  if (digits.length === 12 || digits.length === 13) {
+    return digits;
+  }
+  return "";
+}
+
 /**
  * Claude 응답 텍스트에서 JSON 블록 파싱.
  * 실패 시 기존 brand/code 형식이면 품번·브랜드만 폴백.
@@ -69,18 +130,28 @@ function normalizeLabelField(value: unknown): string {
 function parseExtractFromContent(content: string): {
   productCode: string;
   brand: string;
+  modelName: string;
   productType: string;
   price: number | null;
+  barcode: string;
 } {
+  const empty = {
+    productCode: "",
+    brand: "",
+    modelName: "",
+    productType: "",
+    price: null,
+    barcode: "",
+  };
   const match = content.match(/\{[\s\S]*\}/);
   if (!match) {
-    return { productCode: "", brand: "", productType: "", price: null };
+    return empty;
   }
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(match[0]) as Record<string, unknown>;
   } catch {
-    return { productCode: "", brand: "", productType: "", price: null };
+    return empty;
   }
 
   if ("productCode" in parsed) {
@@ -93,8 +164,10 @@ function parseExtractFromContent(content: string): {
     const productCode = normalizeProductCode(raw);
     const price = normalizePrice(parsed.price);
     const brand = normalizeLabelField(parsed.brand);
+    const modelName = normalizeLabelField(parsed.modelName);
     const productType = normalizeLabelField(parsed.productType);
-    return { productCode, brand, productType, price };
+    const barcode = normalizeBarcode(parsed.barcode);
+    return { productCode, brand, modelName, productType, price, barcode };
   }
 
   if ("brand" in parsed || "code" in parsed) {
@@ -105,10 +178,17 @@ function parseExtractFromContent(content: string): {
     if (typeof codeRaw === "string") {
       code = codeRaw.replace(/\s+/g, "").toUpperCase();
     }
-    return { productCode: code, brand, productType: "", price: null };
+    return {
+      productCode: code,
+      brand,
+      modelName: "",
+      productType: "",
+      price: null,
+      barcode: "",
+    };
   }
 
-  return { productCode: "", brand: "", productType: "", price: null };
+  return empty;
 }
 
 function extractAssistantText(data: {
@@ -215,9 +295,16 @@ export async function POST(request: NextRequest) {
     };
 
     const assistantText = extractAssistantText(data);
-    const { productCode, brand, productType, price } =
+    const { productCode, brand, modelName, productType, price, barcode } =
       parseExtractFromContent(assistantText);
-    return NextResponse.json({ productCode, brand, productType, price });
+    return NextResponse.json({
+      productCode,
+      brand,
+      modelName,
+      productType,
+      price,
+      barcode,
+    });
   } catch (e) {
     console.error("extract route:", e);
     return NextResponse.json(

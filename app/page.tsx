@@ -14,8 +14,10 @@ import type { CoupangProduct } from "@/lib/coupang";
 export interface ExtractResult {
   productCode: string;
   brand: string;
+  modelName: string;
   productType: string;
   price: number | null;
+  barcode: string;
 }
 
 type SearchItem = {
@@ -674,6 +676,10 @@ export default function Home() {
           : "";
       const brand =
         typeof extractJson.brand === "string" ? extractJson.brand.trim() : "";
+      const modelName =
+        typeof extractJson.modelName === "string"
+          ? extractJson.modelName.trim()
+          : "";
       const productType =
         typeof extractJson.productType === "string"
           ? extractJson.productType.trim()
@@ -682,12 +688,18 @@ export default function Home() {
         typeof extractJson.price === "number" && Number.isFinite(extractJson.price)
           ? extractJson.price
           : null;
+      const barcode =
+        typeof extractJson.barcode === "string"
+          ? extractJson.barcode.trim()
+          : "";
 
       setExtractResult({
         productCode,
         brand,
+        modelName,
         productType,
         price: priceFromTag,
+        barcode,
       });
 
       if (!productCode) {
@@ -705,8 +717,14 @@ export default function Home() {
       if (brand) {
         searchParams.set("brand", brand);
       }
+      if (modelName) {
+        searchParams.set("modelName", modelName);
+      }
       if (productType) {
         searchParams.set("productType", productType);
+      }
+      if (barcode) {
+        searchParams.set("barcode", barcode);
       }
       const searchRes = await fetch(`/api/search?${searchParams.toString()}`);
 
@@ -726,6 +744,7 @@ export default function Home() {
         meta?: {
           naverOk: boolean;
           coupangOk: boolean;
+          usedBarcodeFallback?: boolean;
           coupangError?: string;
         };
       };
@@ -814,6 +833,7 @@ export default function Home() {
           meta?: {
             naverOk: boolean;
             coupangOk: boolean;
+            usedBarcodeFallback?: boolean;
             coupangError?: string;
           };
         };
