@@ -745,6 +745,7 @@ export default function Home() {
           naverOk: boolean;
           coupangOk: boolean;
           usedBarcodeFallback?: boolean;
+          usedRelaxedMatch?: boolean;
           coupangError?: string;
         };
       };
@@ -834,6 +835,7 @@ export default function Home() {
             naverOk: boolean;
             coupangOk: boolean;
             usedBarcodeFallback?: boolean;
+            usedRelaxedMatch?: boolean;
             coupangError?: string;
           };
         };

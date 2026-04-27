@@ -161,6 +161,7 @@ type NaverResult = {
   ok: boolean;
   items: NormalizedItem[];
   usedBarcode: boolean;
+  usedRelaxedMatch: boolean;
 };
 
 type CoupangResult = {
@@ -169,6 +170,7 @@ type CoupangResult = {
   cheapest: CoupangProduct | null;
   deepLink: string | null;
   usedBarcode: boolean;
+  usedRelaxedMatch: boolean;
   error?: string;
 };
 
@@ -183,6 +185,7 @@ function getErrorMessage(e: unknown): string {
 }
 
 const RELEVANCE_THRESHOLD = 30;
+const PRODUCT_CODE_MIN_LENGTH = 5;
 
 const GENERIC_WORDS = new Set([
   "슬랙스",
@@ -289,20 +292,29 @@ function scoreItemRelevance(
 }
 
 /**
- * 가장 강한 신호 1개를 게이트로 사용.
- * - modelName 있으면 모델명 매칭(+50) 필수 — listings 에 코드 변형이 흔해서 코드보다 모델명이 안정적
- * - 모델명 없고 code 만 있으면 코드 매칭(+100) 필수
- * - 둘 다 없으면 브랜드+토큰 합산 30 이상
+ * 우선순위:
+ *  1) productCode 가 명확(5자 이상)하면 strict — 코드 매칭(+100) 필수
+ *  2) modelName 있으면 model — 모델명 매칭(+50) 필수
+ *  3) 둘 다 없으면 loose — 브랜드+토큰 합산 30 이상
+ *
+ * strict 모드에서 결과 0개면 호출부에서 relaxed 폴백으로 재필터.
  */
 function effectiveThresholdFor(
   extractedCode: string | null,
   modelName: string
-): number {
+): { threshold: number; mode: "strict" | "model" | "loose" } {
+  if (extractedCode && extractedCode.length >= PRODUCT_CODE_MIN_LENGTH) {
+    return { threshold: 100, mode: "strict" };
+  }
+  if (modelName && modelName.trim()) {
+    return { threshold: 50, mode: "model" };
+  }
+  return { threshold: RELEVANCE_THRESHOLD, mode: "loose" };
+}
+
+function relaxedThresholdFor(modelName: string): number {
   if (modelName && modelName.trim()) {
     return 50;
-  }
-  if (extractedCode) {
-    return 100;
   }
   return RELEVANCE_THRESHOLD;
 }
@@ -312,10 +324,10 @@ function filterCoupangByRelevance(
   query: string,
   brand: string,
   modelName: string
-): CoupangProduct[] {
+): { products: CoupangProduct[]; usedRelaxedMatch: boolean } {
   const code = extractProductCode(query);
   const brandHint = extractBrandHint(brand, query);
-  const threshold = effectiveThresholdFor(code, modelName);
+  const { threshold, mode } = effectiveThresholdFor(code, modelName);
   const before = products.length;
 
   const scored: { p: CoupangProduct; score: number }[] = products.map((p) => ({
@@ -328,21 +340,38 @@ function filterCoupangByRelevance(
       modelName
     ),
   }));
-  const passed = scored.filter((s) => s.score >= threshold);
+
+  let passed = scored.filter((s) => s.score >= threshold);
+  let usedRelaxedMatch = false;
+
+  if (passed.length === 0 && mode === "strict") {
+    const relaxed = relaxedThresholdFor(modelName);
+    const relaxedPassed = scored.filter((s) => s.score >= relaxed);
+    if (relaxedPassed.length > 0) {
+      passed = relaxedPassed;
+      usedRelaxedMatch = true;
+    }
+  }
+
   const topScore = passed.reduce((m, s) => Math.max(m, s.score), 0);
 
   console.log("[coupang filter]", {
     query,
-    extractedCode: code,
-    brandHint: brandHint || null,
-    modelName: modelName || null,
+    mode,
     threshold,
+    productCode: code,
+    modelName: modelName || null,
+    brandHint: brandHint || null,
     before,
     after: passed.length,
+    usedRelaxedMatch,
     topScore,
   });
 
-  return passed.map((s) => s.p);
+  return {
+    products: passed.map((s) => s.p),
+    usedRelaxedMatch,
+  };
 }
 
 function filterNaverByRelevance(
@@ -350,31 +379,48 @@ function filterNaverByRelevance(
   query: string,
   brand: string,
   modelName: string
-): NormalizedItem[] {
+): { items: NormalizedItem[]; usedRelaxedMatch: boolean } {
   const code = extractProductCode(query);
   const brandHint = extractBrandHint(brand, query);
-  const threshold = effectiveThresholdFor(code, modelName);
+  const { threshold, mode } = effectiveThresholdFor(code, modelName);
   const before = items.length;
 
   const scored: { i: NormalizedItem; score: number }[] = items.map((i) => ({
     i,
     score: scoreItemRelevance(i.title, query, code, brandHint, modelName),
   }));
-  const passed = scored.filter((s) => s.score >= threshold);
+
+  let passed = scored.filter((s) => s.score >= threshold);
+  let usedRelaxedMatch = false;
+
+  if (passed.length === 0 && mode === "strict") {
+    const relaxed = relaxedThresholdFor(modelName);
+    const relaxedPassed = scored.filter((s) => s.score >= relaxed);
+    if (relaxedPassed.length > 0) {
+      passed = relaxedPassed;
+      usedRelaxedMatch = true;
+    }
+  }
+
   const topScore = passed.reduce((m, s) => Math.max(m, s.score), 0);
 
   console.log("[naver filter]", {
     query,
-    extractedCode: code,
-    brandHint: brandHint || null,
-    modelName: modelName || null,
+    mode,
     threshold,
+    productCode: code,
+    modelName: modelName || null,
+    brandHint: brandHint || null,
     before,
     after: passed.length,
+    usedRelaxedMatch,
     topScore,
   });
 
-  return passed.map((s) => s.i);
+  return {
+    items: passed.map((s) => s.i),
+    usedRelaxedMatch,
+  };
 }
 
 async function runNaver(
@@ -390,12 +436,24 @@ async function runNaver(
 
   if (!clientId || !clientSecret) {
     console.error("[search] 네이버 API 키 미설정");
-    return { ok: false, items: [], usedBarcode: false };
+    return {
+      ok: false,
+      items: [],
+      usedBarcode: false,
+      usedRelaxedMatch: false,
+    };
   }
 
   try {
-    let items = await fetchNaverShop(primaryQuery, clientId, clientSecret);
-    items = filterNaverByRelevance(items, primaryQuery, brand, modelName);
+    const primary = await fetchNaverShop(primaryQuery, clientId, clientSecret);
+    let filtered = filterNaverByRelevance(
+      primary,
+      primaryQuery,
+      brand,
+      modelName
+    );
+    let items = filtered.items;
+    let usedRelaxedMatch = filtered.usedRelaxedMatch;
 
     if (items.length === 0 && hasExtraTerms && primaryQuery !== fallbackQuery) {
       const fallback = await fetchNaverShop(
@@ -403,12 +461,14 @@ async function runNaver(
         clientId,
         clientSecret
       );
-      items = filterNaverByRelevance(
+      filtered = filterNaverByRelevance(
         fallback,
         fallbackQuery,
         brand,
         modelName
       );
+      items = filtered.items;
+      usedRelaxedMatch = filtered.usedRelaxedMatch;
     }
 
     if (items.length === 0 && barcode) {
@@ -419,14 +479,29 @@ async function runNaver(
         clientSecret
       );
       if (byBarcode.length > 0) {
-        return { ok: true, items: byBarcode, usedBarcode: true };
+        return {
+          ok: true,
+          items: byBarcode,
+          usedBarcode: true,
+          usedRelaxedMatch: false,
+        };
       }
     }
 
-    return { ok: true, items, usedBarcode: false };
+    return {
+      ok: true,
+      items,
+      usedBarcode: false,
+      usedRelaxedMatch,
+    };
   } catch (e) {
     console.error("[search] 네이버 호출 실패:", e);
-    return { ok: false, items: [], usedBarcode: false };
+    return {
+      ok: false,
+      items: [],
+      usedBarcode: false,
+      usedRelaxedMatch: false,
+    };
   }
 }
 
@@ -439,29 +514,34 @@ async function runCoupang(
   barcode: string
 ): Promise<CoupangResult> {
   try {
-    let products = (await coupangSearchProducts(primaryQuery, COUPANG_LIMIT))
-      .filter((p) => p.productPrice > 0);
-    products = filterCoupangByRelevance(
-      products,
+    const primaryRaw = (
+      await coupangSearchProducts(primaryQuery, COUPANG_LIMIT)
+    ).filter((p) => p.productPrice > 0);
+    let filtered = filterCoupangByRelevance(
+      primaryRaw,
       primaryQuery,
       brand,
       modelName
     );
+    let products = filtered.products;
+    let usedRelaxedMatch = filtered.usedRelaxedMatch;
 
     if (
       products.length === 0 &&
       hasExtraTerms &&
       primaryQuery !== fallbackQuery
     ) {
-      const fallback = (
+      const fallbackRaw = (
         await coupangSearchProducts(fallbackQuery, COUPANG_LIMIT)
       ).filter((p) => p.productPrice > 0);
-      products = filterCoupangByRelevance(
-        fallback,
+      filtered = filterCoupangByRelevance(
+        fallbackRaw,
         fallbackQuery,
         brand,
         modelName
       );
+      products = filtered.products;
+      usedRelaxedMatch = filtered.usedRelaxedMatch;
     }
 
     let usedBarcode = false;
@@ -473,6 +553,7 @@ async function runCoupang(
       if (byBarcode.length > 0) {
         products = byBarcode;
         usedBarcode = true;
+        usedRelaxedMatch = false;
       }
     }
 
@@ -483,6 +564,7 @@ async function runCoupang(
         cheapest: null,
         deepLink: null,
         usedBarcode: false,
+        usedRelaxedMatch: false,
       };
     }
 
@@ -496,6 +578,7 @@ async function runCoupang(
       cheapest,
       deepLink: cheapest.productUrl,
       usedBarcode,
+      usedRelaxedMatch,
     };
   } catch (e) {
     console.error("[search] 쿠팡 호출 실패:", e);
@@ -505,6 +588,7 @@ async function runCoupang(
       cheapest: null,
       deepLink: null,
       usedBarcode: false,
+      usedRelaxedMatch: false,
       error: getErrorMessage(e),
     };
   }
@@ -560,7 +644,12 @@ export async function GET(request: NextRequest) {
     const naverResult: NaverResult =
       settled[0].status === "fulfilled"
         ? settled[0].value
-        : { ok: false, items: [], usedBarcode: false };
+        : {
+            ok: false,
+            items: [],
+            usedBarcode: false,
+            usedRelaxedMatch: false,
+          };
 
     const coupangResult: CoupangResult =
       settled[1].status === "fulfilled"
@@ -571,6 +660,7 @@ export async function GET(request: NextRequest) {
             cheapest: null,
             deepLink: null,
             usedBarcode: false,
+            usedRelaxedMatch: false,
             error: getErrorMessage(settled[1].reason),
           };
 
@@ -587,6 +677,8 @@ export async function GET(request: NextRequest) {
         coupangOk: coupangResult.ok,
         usedBarcodeFallback:
           naverResult.usedBarcode || coupangResult.usedBarcode,
+        usedRelaxedMatch:
+          naverResult.usedRelaxedMatch || coupangResult.usedRelaxedMatch,
         ...(coupangResult.error
           ? { coupangError: coupangResult.error }
           : {}),
