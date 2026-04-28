@@ -1,9 +1,22 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "BOGOSA - 사기 전에, 3초만",
   description: "매장에서 본 상품, 온라인 최저가 3초 만에 확인하세요",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "BOGOSA",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#4493FF",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
