@@ -789,6 +789,11 @@ export default function Home() {
           coupangOk: boolean;
           usedBarcodeFallback?: boolean;
           usedRelaxedMatch?: boolean;
+          usedCodePermutation?: {
+            used: true;
+            originalCode: string;
+            matchedCode: string;
+          };
           coupangError?: string;
         };
       };
@@ -882,6 +887,11 @@ export default function Home() {
             coupangOk: boolean;
             usedBarcodeFallback?: boolean;
             usedRelaxedMatch?: boolean;
+            usedCodePermutation?: {
+              used: true;
+              originalCode: string;
+              matchedCode: string;
+            };
             coupangError?: string;
           };
         };
