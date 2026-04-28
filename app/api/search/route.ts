@@ -163,12 +163,90 @@ type CodePermutationInfo = {
   matchedCode: string;
 };
 
+type SearchStepNumber = 1 | 2 | 3 | 4 | 5 | 6;
+
+type SearchStep = {
+  step: SearchStepNumber;
+  query: string;
+  /** 필터에 넘길 modelName. 단계별로 strict/model/loose 모드 결정. */
+  filterModelName: string;
+  /** Step 3 (코드 변형) 일 때만 채워짐. usedCodePermutation 메타 추적용. */
+  variant?: string;
+};
+
+type SearchStrategy = {
+  step: SearchStepNumber;
+  query: string;
+  attempted: number;
+};
+
+/**
+ * 6단계 폴백 쿼리 배열 빌드 (matched 검색 위해 단계별 시도 후보).
+ * 빈 토큰 자동 제외, 동일 쿼리 dedup.
+ *
+ *  1. brand + modelName + code  (가장 정확)
+ *  2. brand + code             (productType 노이즈 제거)
+ *  3. brand + code변형들        (OCR 실수 보정)
+ *  4. brand + modelName        (코드 자체가 잘못된 경우)
+ *  5. brand + productType      (last resort, loose)
+ *  (Step 6 = barcode 단독 — 호출부에서 별도 처리)
+ */
+function buildSearchSteps(args: {
+  brand: string;
+  modelName: string;
+  productType: string;
+  code: string | null;
+}): SearchStep[] {
+  const { brand, modelName, productType, code } = args;
+  const steps: SearchStep[] = [];
+  const seen = new Set<string>();
+
+  function push(
+    step: Exclude<SearchStepNumber, 6>,
+    tokens: string[],
+    filterModelName: string,
+    variant?: string
+  ) {
+    const query = tokens
+      .map((t) => (t || "").trim())
+      .filter((t) => t.length > 0)
+      .join(" ");
+    if (!query || seen.has(query)) {
+      return;
+    }
+    seen.add(query);
+    steps.push({ step, query, filterModelName, variant });
+  }
+
+  if (brand && modelName && code) {
+    push(1, [brand, modelName, code], modelName);
+  }
+  if (brand && code) {
+    push(2, [brand, code], "");
+  }
+  if (code && code.length >= PRODUCT_CODE_MIN_LENGTH) {
+    const variants = generateCodePermutations(code);
+    for (const v of variants) {
+      push(3, [brand, v], "", v);
+    }
+  }
+  if (brand && modelName) {
+    push(4, [brand, modelName], modelName);
+  }
+  if (brand && productType) {
+    push(5, [brand, productType], "");
+  }
+
+  return steps;
+}
+
 type NaverResult = {
   ok: boolean;
   items: NormalizedItem[];
   usedBarcode: boolean;
   usedRelaxedMatch: boolean;
   usedCodePermutation: CodePermutationInfo | null;
+  searchStrategy: SearchStrategy | null;
 };
 
 type CoupangResult = {
@@ -179,6 +257,7 @@ type CoupangResult = {
   usedBarcode: boolean;
   usedRelaxedMatch: boolean;
   usedCodePermutation: CodePermutationInfo | null;
+  searchStrategy: SearchStrategy | null;
   error?: string;
 };
 
@@ -541,10 +620,9 @@ function filterNaverByRelevance(
 
 async function runNaver(
   primaryQuery: string,
-  fallbackQuery: string,
-  hasExtraTerms: boolean,
   brand: string,
   modelName: string,
+  productType: string,
   barcode: string
 ): Promise<NaverResult> {
   const clientId = process.env.NAVER_CLIENT_ID?.trim();
@@ -558,88 +636,62 @@ async function runNaver(
       usedBarcode: false,
       usedRelaxedMatch: false,
       usedCodePermutation: null,
+      searchStrategy: null,
     };
   }
 
   try {
-    // Step 1: primary
-    const primary = await fetchNaverShop(primaryQuery, clientId, clientSecret);
-    let filtered = filterNaverByRelevance(
-      primary,
-      primaryQuery,
-      brand,
-      modelName
-    );
-    let items = filtered.items;
-    let usedRelaxedMatch = filtered.usedRelaxedMatch;
-    let usedCodePermutation: CodePermutationInfo | null = null;
-
-    // Step 2: 코드 변형 시도 — modelName 없고 productCode 5자+ 일 때만
     const code = extractProductCode(primaryQuery);
-    if (
-      items.length === 0 &&
-      code &&
-      code.length >= PRODUCT_CODE_MIN_LENGTH &&
-      !modelName.trim()
-    ) {
-      const variants = generateCodePermutations(code);
-      const codeRe = new RegExp(escapeRegExp(code), "i");
-      for (const variant of variants) {
-        const variantQuery = primaryQuery.replace(codeRe, variant);
-        const variantRaw = await fetchNaverShop(
-          variantQuery,
-          clientId,
-          clientSecret
-        );
-        const variantFiltered = filterNaverByRelevance(
-          variantRaw,
-          variantQuery,
-          brand,
-          modelName
-        );
-        const matched = variantFiltered.items.length > 0;
-        console.log("[code permutation] tried (naver):", {
-          variant,
-          before: variantRaw.length,
-          after: variantFiltered.items.length,
-          matched,
-        });
-        if (matched) {
-          items = variantFiltered.items;
-          usedRelaxedMatch = variantFiltered.usedRelaxedMatch;
+    const steps = buildSearchSteps({ brand, modelName, productType, code });
+
+    let items: NormalizedItem[] = [];
+    let usedRelaxedMatch = false;
+    let usedCodePermutation: CodePermutationInfo | null = null;
+    let matchedStep: SearchStepNumber | null = null;
+    let matchedQuery = "";
+    let attempted = 0;
+
+    for (const step of steps) {
+      attempted++;
+      const raw = await fetchNaverShop(step.query, clientId, clientSecret);
+      const filtered = filterNaverByRelevance(
+        raw,
+        step.query,
+        brand,
+        step.filterModelName
+      );
+      const matched = filtered.items.length > 0;
+      console.log("[search step] (naver)", {
+        step: step.step,
+        query: step.query,
+        before: raw.length,
+        after: filtered.items.length,
+        matched,
+      });
+      if (matched) {
+        items = filtered.items;
+        usedRelaxedMatch = filtered.usedRelaxedMatch;
+        matchedStep = step.step;
+        matchedQuery = step.query;
+        if (step.step === 3 && step.variant && code) {
           usedCodePermutation = {
             used: true,
             originalCode: code,
-            matchedCode: variant,
+            matchedCode: step.variant,
           };
-          console.log("[code permutation] success (naver):", {
-            original: code,
-            matched: variant,
-          });
-          break;
         }
+        console.log("[search] success (naver)", {
+          step: step.step,
+          query: step.query,
+        });
+        break;
       }
     }
 
-    // Step 3: query 단독 fallback
-    if (items.length === 0 && hasExtraTerms && primaryQuery !== fallbackQuery) {
-      const fallback = await fetchNaverShop(
-        fallbackQuery,
-        clientId,
-        clientSecret
-      );
-      filtered = filterNaverByRelevance(
-        fallback,
-        fallbackQuery,
-        brand,
-        modelName
-      );
-      items = filtered.items;
-      usedRelaxedMatch = filtered.usedRelaxedMatch;
-    }
-
-    // Step 4: barcode fallback
+    // Step 6: barcode (관련도 필터 우회)
+    let usedBarcode = false;
     if (items.length === 0 && barcode) {
+      attempted++;
       console.log("[search] 네이버 barcode 폴백 시도:", barcode);
       const byBarcode = await fetchNaverShop(
         barcode,
@@ -647,22 +699,26 @@ async function runNaver(
         clientSecret
       );
       if (byBarcode.length > 0) {
-        return {
-          ok: true,
-          items: byBarcode,
-          usedBarcode: true,
-          usedRelaxedMatch: false,
-          usedCodePermutation: null,
-        };
+        items = byBarcode;
+        usedBarcode = true;
+        usedRelaxedMatch = false;
+        usedCodePermutation = null;
+        matchedStep = 6;
+        matchedQuery = barcode;
       }
     }
+
+    const searchStrategy: SearchStrategy | null = matchedStep
+      ? { step: matchedStep, query: matchedQuery, attempted }
+      : null;
 
     return {
       ok: true,
       items,
-      usedBarcode: false,
+      usedBarcode,
       usedRelaxedMatch,
       usedCodePermutation,
+      searchStrategy,
     };
   } catch (e) {
     console.error("[search] 네이버 호출 실패:", e);
@@ -672,100 +728,72 @@ async function runNaver(
       usedBarcode: false,
       usedRelaxedMatch: false,
       usedCodePermutation: null,
+      searchStrategy: null,
     };
   }
 }
 
 async function runCoupang(
   primaryQuery: string,
-  fallbackQuery: string,
-  hasExtraTerms: boolean,
   brand: string,
   modelName: string,
+  productType: string,
   barcode: string
 ): Promise<CoupangResult> {
   try {
-    // Step 1: primary
-    const primaryRaw = (
-      await coupangSearchProducts(primaryQuery, COUPANG_LIMIT)
-    ).filter((p) => p.productPrice > 0);
-    let filtered = filterCoupangByRelevance(
-      primaryRaw,
-      primaryQuery,
-      brand,
-      modelName
-    );
-    let products = filtered.products;
-    let usedRelaxedMatch = filtered.usedRelaxedMatch;
-    let usedCodePermutation: CodePermutationInfo | null = null;
-
-    // Step 2: 코드 변형 시도 — modelName 없고 productCode 5자+ 일 때만
     const code = extractProductCode(primaryQuery);
-    if (
-      products.length === 0 &&
-      code &&
-      code.length >= PRODUCT_CODE_MIN_LENGTH &&
-      !modelName.trim()
-    ) {
-      const variants = generateCodePermutations(code);
-      const codeRe = new RegExp(escapeRegExp(code), "i");
-      for (const variant of variants) {
-        const variantQuery = primaryQuery.replace(codeRe, variant);
-        const variantRaw = (
-          await coupangSearchProducts(variantQuery, COUPANG_LIMIT)
-        ).filter((p) => p.productPrice > 0);
-        const variantFiltered = filterCoupangByRelevance(
-          variantRaw,
-          variantQuery,
-          brand,
-          modelName
-        );
-        const matched = variantFiltered.products.length > 0;
-        console.log("[code permutation] tried (coupang):", {
-          variant,
-          before: variantRaw.length,
-          after: variantFiltered.products.length,
-          matched,
-        });
-        if (matched) {
-          products = variantFiltered.products;
-          usedRelaxedMatch = variantFiltered.usedRelaxedMatch;
+    const steps = buildSearchSteps({ brand, modelName, productType, code });
+
+    let products: CoupangProduct[] = [];
+    let usedRelaxedMatch = false;
+    let usedCodePermutation: CodePermutationInfo | null = null;
+    let matchedStep: SearchStepNumber | null = null;
+    let matchedQuery = "";
+    let attempted = 0;
+
+    for (const step of steps) {
+      attempted++;
+      const raw = (
+        await coupangSearchProducts(step.query, COUPANG_LIMIT)
+      ).filter((p) => p.productPrice > 0);
+      const filtered = filterCoupangByRelevance(
+        raw,
+        step.query,
+        brand,
+        step.filterModelName
+      );
+      const matched = filtered.products.length > 0;
+      console.log("[search step] (coupang)", {
+        step: step.step,
+        query: step.query,
+        before: raw.length,
+        after: filtered.products.length,
+        matched,
+      });
+      if (matched) {
+        products = filtered.products;
+        usedRelaxedMatch = filtered.usedRelaxedMatch;
+        matchedStep = step.step;
+        matchedQuery = step.query;
+        if (step.step === 3 && step.variant && code) {
           usedCodePermutation = {
             used: true,
             originalCode: code,
-            matchedCode: variant,
+            matchedCode: step.variant,
           };
-          console.log("[code permutation] success (coupang):", {
-            original: code,
-            matched: variant,
-          });
-          break;
         }
+        console.log("[search] success (coupang)", {
+          step: step.step,
+          query: step.query,
+        });
+        break;
       }
     }
 
-    // Step 3: query 단독 fallback
-    if (
-      products.length === 0 &&
-      hasExtraTerms &&
-      primaryQuery !== fallbackQuery
-    ) {
-      const fallbackRaw = (
-        await coupangSearchProducts(fallbackQuery, COUPANG_LIMIT)
-      ).filter((p) => p.productPrice > 0);
-      filtered = filterCoupangByRelevance(
-        fallbackRaw,
-        fallbackQuery,
-        brand,
-        modelName
-      );
-      products = filtered.products;
-      usedRelaxedMatch = filtered.usedRelaxedMatch;
-    }
-
-    // Step 4: barcode fallback
+    // Step 6: barcode (관련도 필터 우회)
     let usedBarcode = false;
     if (products.length === 0 && barcode) {
+      attempted++;
       console.log("[search] 쿠팡 barcode 폴백 시도:", barcode);
       const byBarcode = (
         await coupangSearchProducts(barcode, COUPANG_LIMIT)
@@ -775,8 +803,14 @@ async function runCoupang(
         usedBarcode = true;
         usedRelaxedMatch = false;
         usedCodePermutation = null;
+        matchedStep = 6;
+        matchedQuery = barcode;
       }
     }
+
+    const searchStrategy: SearchStrategy | null = matchedStep
+      ? { step: matchedStep, query: matchedQuery, attempted }
+      : null;
 
     if (products.length === 0) {
       return {
@@ -787,6 +821,7 @@ async function runCoupang(
         usedBarcode: false,
         usedRelaxedMatch: false,
         usedCodePermutation: null,
+        searchStrategy: null,
       };
     }
 
@@ -802,6 +837,7 @@ async function runCoupang(
       usedBarcode,
       usedRelaxedMatch,
       usedCodePermutation,
+      searchStrategy,
     };
   } catch (e) {
     console.error("[search] 쿠팡 호출 실패:", e);
@@ -813,6 +849,7 @@ async function runCoupang(
       usedBarcode: false,
       usedRelaxedMatch: false,
       usedCodePermutation: null,
+      searchStrategy: null,
       error: getErrorMessage(e),
     };
   }
@@ -838,7 +875,6 @@ export async function GET(request: NextRequest) {
     const barcode =
       barcodeRaw.length === 12 || barcodeRaw.length === 13 ? barcodeRaw : "";
 
-    const hasExtraTerms = Boolean(brand || modelName || productType);
     const primaryQuery = buildSearchQuery(
       query,
       brand || undefined,
@@ -854,15 +890,8 @@ export async function GET(request: NextRequest) {
     }
 
     const settled = await Promise.allSettled([
-      runNaver(primaryQuery, query, hasExtraTerms, brand, modelName, barcode),
-      runCoupang(
-        primaryQuery,
-        query,
-        hasExtraTerms,
-        brand,
-        modelName,
-        barcode
-      ),
+      runNaver(primaryQuery, brand, modelName, productType, barcode),
+      runCoupang(primaryQuery, brand, modelName, productType, barcode),
     ]);
 
     const naverResult: NaverResult =
@@ -874,6 +903,7 @@ export async function GET(request: NextRequest) {
             usedBarcode: false,
             usedRelaxedMatch: false,
             usedCodePermutation: null,
+            searchStrategy: null,
           };
 
     const coupangResult: CoupangResult =
@@ -887,11 +917,14 @@ export async function GET(request: NextRequest) {
             usedBarcode: false,
             usedRelaxedMatch: false,
             usedCodePermutation: null,
+            searchStrategy: null,
             error: getErrorMessage(settled[1].reason),
           };
 
     const codePermutation =
       naverResult.usedCodePermutation || coupangResult.usedCodePermutation;
+    const searchStrategy =
+      naverResult.searchStrategy || coupangResult.searchStrategy;
 
     return NextResponse.json({
       items: naverResult.items,
@@ -909,6 +942,7 @@ export async function GET(request: NextRequest) {
         usedRelaxedMatch:
           naverResult.usedRelaxedMatch || coupangResult.usedRelaxedMatch,
         ...(codePermutation ? { usedCodePermutation: codePermutation } : {}),
+        ...(searchStrategy ? { searchStrategy } : {}),
         ...(coupangResult.error
           ? { coupangError: coupangResult.error }
           : {}),

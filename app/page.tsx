@@ -794,6 +794,11 @@ export default function Home() {
             originalCode: string;
             matchedCode: string;
           };
+          searchStrategy?: {
+            step: 1 | 2 | 3 | 4 | 5 | 6;
+            query: string;
+            attempted: number;
+          };
           coupangError?: string;
         };
       };
@@ -891,6 +896,11 @@ export default function Home() {
               used: true;
               originalCode: string;
               matchedCode: string;
+            };
+            searchStrategy?: {
+              step: 1 | 2 | 3 | 4 | 5 | 6;
+              query: string;
+              attempted: number;
             };
             coupangError?: string;
           };
@@ -1581,6 +1591,31 @@ export default function Home() {
                               </span>
                             ) : null}
                           </div>
+                          {storePriceNum != null &&
+                          storePriceNum > 0 &&
+                          item.lprice > 0 &&
+                          item.lprice !== storePriceNum ? (() => {
+                            const diff = storePriceNum - item.lprice;
+                            const absDiff = Math.abs(diff);
+                            const percent = Math.round(
+                              (absDiff / storePriceNum) * 100
+                            );
+                            const cheaper = diff > 0;
+                            return (
+                              <div
+                                className="pt-1 text-sm"
+                                style={{
+                                  color: cheaper ? "#16A34A" : "#EF4444",
+                                  fontWeight: cheaper ? 600 : 500,
+                                  letterSpacing: "-0.015em",
+                                }}
+                              >
+                                {cheaper
+                                  ? `${formatWon(absDiff)}원 절약 (${percent}%)`
+                                  : `${formatWon(absDiff)}원 더 비쌈 (${percent}%)`}
+                              </div>
+                            );
+                          })() : null}
                         </a>
                         <div>
                           <p
