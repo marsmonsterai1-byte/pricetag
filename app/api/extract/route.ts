@@ -9,6 +9,12 @@ const EXTRACTION_PROMPT = `당신은 상품 사진에서 검색에 필요한 정
 
 1. brand — 브랜드명
    - 라벨에 영문이면 영문 그대로, 한글이면 한글 그대로. 번역하지 말 것.
+   - ⚠️ brand 에는 카테고리 단어 (양말, 슬랙스, 섬유유연제, 라면 등) 절대 포함하지 말 것.
+     ❌ 잘못된 예: "Nike 양말" / "농심 라면" / "스너글 섬유유연제"
+     ✅ 올바른 예: brand="Nike" + productType="양말"
+                  brand="농심" + productType="라면"
+                  brand="스너글" + productType="섬유유연제"
+   - 라벨에 "Nike 양말" 같이 한 줄로 붙어있어도 → brand 는 "Nike" 만, "양말" 은 productType 으로 분리.
    - 예: "Nike" / "나이키" / "Snuggle" / "스너글" / "Apple" / "Dyson" / "에스티 로더" / "농심"
 
 2. modelName — 모델명 / 제품명
@@ -111,6 +117,67 @@ function normalizeLabelField(value: unknown): string {
   return value.trim();
 }
 
+/**
+ * 후처리 안전망: KIE 가 brand 에 카테고리 단어를 같이 박아넣은 케이스 분리.
+ * 예: brand="Nike 양말", productType="" → brand="Nike", productType="양말"
+ * 토큰 기반이라 브랜드명 중간 단어가 우연히 카테고리어와 같아도 오분리 X.
+ */
+const KNOWN_CATEGORIES: string[] = [
+  // 의류/잡화
+  "양말", "슬랙스", "바지", "셔츠", "티셔츠", "원피스", "자켓", "코트", "신발", "운동화",
+  "구두", "샌들", "스니커즈", "속옷", "잠옷",
+  "가방", "지갑", "시계", "선글라스", "안경", "모자",
+  // 생활용품
+  "섬유유연제", "세제", "샴푸", "린스", "비누",
+  "휴지", "수건", "칫솔", "치약",
+  // 식품/건강
+  "라면", "과자", "빵", "음료", "커피", "차",
+  "비타민", "영양제", "건강식품", "우유", "요거트",
+  // 화장품
+  "세럼", "크림", "로션", "미스트", "에센스", "토너",
+  "립스틱", "선크림", "쿠션", "파운데이션",
+  // 전자/가전
+  "스마트폰", "노트북", "태블릿", "이어폰", "헤드폰",
+  "청소기", "에어프라이어", "전기밥솥", "공기청정기",
+  "선풍기", "히터", "전기장판", "전자레인지", "정수기",
+  // 의료 (5060 핵심)
+  "혈압계", "체온계", "무릎보호대", "보청기",
+];
+
+function splitBrandFromCategory(
+  rawBrand: string,
+  rawProductType: string
+): { brand: string; productType: string } {
+  const trimmed = rawBrand.trim();
+
+  if (rawProductType && rawProductType.trim()) {
+    return { brand: trimmed, productType: rawProductType };
+  }
+
+  const tokens = trimmed.split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length < 2) {
+    return { brand: trimmed, productType: "" };
+  }
+
+  const lastToken = tokens[tokens.length - 1];
+  if (KNOWN_CATEGORIES.includes(lastToken)) {
+    return {
+      brand: tokens.slice(0, -1).join(" "),
+      productType: lastToken,
+    };
+  }
+
+  const firstToken = tokens[0];
+  if (KNOWN_CATEGORIES.includes(firstToken)) {
+    return {
+      brand: tokens.slice(1).join(" "),
+      productType: firstToken,
+    };
+  }
+
+  return { brand: trimmed, productType: "" };
+}
+
 /** 바코드 숫자만 남기고 12 또는 13자리만 통과. 그 외는 잘못 인식한 것으로 간주. */
 function normalizeBarcode(value: unknown): string {
   if (typeof value !== "string" && typeof value !== "number") {
@@ -163,11 +230,30 @@ function parseExtractFromContent(content: string): {
           : "";
     const productCode = normalizeProductCode(raw);
     const price = normalizePrice(parsed.price);
-    const brand = normalizeLabelField(parsed.brand);
+    const rawBrand = normalizeLabelField(parsed.brand);
     const modelName = normalizeLabelField(parsed.modelName);
-    const productType = normalizeLabelField(parsed.productType);
+    const rawProductType = normalizeLabelField(parsed.productType);
     const barcode = normalizeBarcode(parsed.barcode);
-    return { productCode, brand, modelName, productType, price, barcode };
+
+    const split = splitBrandFromCategory(rawBrand, rawProductType);
+    if (
+      split.brand !== rawBrand ||
+      split.productType !== rawProductType
+    ) {
+      console.log("[brand split]", {
+        before: { brand: rawBrand, productType: rawProductType },
+        after: { brand: split.brand, productType: split.productType },
+      });
+    }
+
+    return {
+      productCode,
+      brand: split.brand,
+      modelName,
+      productType: split.productType,
+      price,
+      barcode,
+    };
   }
 
   if ("brand" in parsed || "code" in parsed) {

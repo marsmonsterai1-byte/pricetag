@@ -10,6 +10,13 @@ import {
   useState,
 } from "react";
 import type { CoupangProduct } from "@/lib/coupang";
+import {
+  addHistory,
+  clearHistory,
+  getHistory,
+  removeHistory,
+  type HistoryItem,
+} from "@/lib/history";
 
 export interface ExtractResult {
   productCode: string;
@@ -115,6 +122,26 @@ function resolveNaverLink(item: { link: string; title: string }): string {
     return `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(cleanTitle)}`;
   }
   return item.link;
+}
+
+/** OCR 결과로부터 검색 히스토리에 저장할 키워드 결정. 빈 문자열이면 저장 X. */
+function buildHistoryKeyword(args: {
+  brand: string;
+  modelName: string;
+  productType: string;
+  productCode: string;
+}): string {
+  const { brand, modelName, productType, productCode } = args;
+  if (modelName) {
+    return `${brand} ${modelName}`.trim();
+  }
+  if (brand && productType) {
+    return `${brand} ${productType}`;
+  }
+  if (productCode) {
+    return productCode;
+  }
+  return "";
 }
 
 function formatRecognitionLine(r: ExtractResult): string {
@@ -294,6 +321,11 @@ export default function Home() {
   const [coupangProducts, setCoupangProducts] = useState<CoupangProduct[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [visibleCount, setVisibleCount] = useState<number>(5);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  useEffect(() => {
+    setHistory(getHistory());
+  }, []);
   const [storePrice, setStorePrice] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -711,6 +743,17 @@ export default function Home() {
         setStorePrice(String(Math.max(0, Math.round(priceFromTag))));
       }
 
+      const historyKeyword = buildHistoryKeyword({
+        brand,
+        modelName,
+        productType,
+        productCode,
+      });
+      if (historyKeyword) {
+        addHistory(historyKeyword);
+        setHistory(getHistory());
+      }
+
       setLoadingStep("search");
       const searchParams = new URLSearchParams();
       searchParams.set("query", productCode);
@@ -792,6 +835,9 @@ export default function Home() {
       if (process.env.NODE_ENV === "development") {
         console.log("[search] manual query:", query);
       }
+
+      addHistory(query);
+      setHistory(getHistory());
 
       setError("");
       setExtractResult(null);
@@ -1079,6 +1125,86 @@ export default function Home() {
             />
           </form>
         </div>
+        ) : null}
+
+        {!previewUrl &&
+        history.length > 0 &&
+        sortedSearchResults.length === 0 &&
+        !error ? (
+          <div className="flex w-full flex-col gap-2">
+            <div className="flex items-center justify-between px-1">
+              <p
+                className="text-sm font-semibold"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                최근 검색
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  clearHistory();
+                  setHistory([]);
+                }}
+                className="text-xs transition hover:opacity-70"
+                style={{
+                  color: "var(--text-tertiary)",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "4px 6px",
+                  letterSpacing: "-0.015em",
+                }}
+                aria-label="최근 검색 전체 삭제"
+              >
+                전체 삭제
+              </button>
+            </div>
+            <ul className="flex flex-wrap gap-2">
+              {history.map((item) => (
+                <li key={item.timestamp}>
+                  <div
+                    className="flex h-9 items-center overflow-hidden rounded-full border bg-white"
+                    style={{ borderColor: "#E5E5E5" }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery(item.keyword);
+                        void runManualSearch(item.keyword);
+                      }}
+                      className="h-full pl-3 pr-2 text-sm transition hover:bg-gray-50"
+                      style={{
+                        color: "#6B6B6B",
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        letterSpacing: "-0.015em",
+                      }}
+                    >
+                      {item.keyword}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        removeHistory(item.keyword);
+                        setHistory(getHistory());
+                      }}
+                      className="flex h-full w-7 items-center justify-center text-sm transition hover:bg-gray-100"
+                      style={{
+                        color: "#9CA3AF",
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                      }}
+                      aria-label={`"${item.keyword}" 검색 기록 삭제`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
 
         {showCompareCta ? (

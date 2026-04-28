@@ -188,27 +188,31 @@ const RELEVANCE_THRESHOLD = 30;
 const PRODUCT_CODE_MIN_LENGTH = 5;
 
 const GENERIC_WORDS = new Set([
-  "슬랙스",
-  "모자",
-  "티셔츠",
-  "바지",
-  "원피스",
-  "자켓",
-  "코트",
-  "신발",
-  "운동화",
-  "가방",
-  "지갑",
-  "시계",
-  "선글라스",
-  "안경",
-  "반팔",
-  "긴팔",
-  "정장",
-  "셔츠",
-  "후드",
-  "맨투맨",
+  // 의류/잡화
+  "슬랙스", "모자", "티셔츠", "바지", "원피스", "자켓", "코트", "신발", "운동화",
+  "가방", "지갑", "시계", "선글라스", "안경", "반팔", "긴팔", "정장", "셔츠", "후드", "맨투맨",
+  // 가전
+  "에어프라이어", "청소기", "공기청정기", "전자레인지", "냉장고", "세탁기", "건조기",
+  "믹서기", "토스터", "전기포트", "정수기", "선풍기", "히터", "전기장판",
+  // 액세서리·소모품
+  "베이킹페이퍼", "파치먼트페이퍼", "라이너", "필터", "소모품", "액세서리",
+  // 호환·대체 단어 (토큰 점수도 0 — 호환 키워드 컷이 1차 차단)
+  "인공", "호환", "교체용", "리필", "케이스", "파우치", "홀더",
 ]);
+
+/** title/productName 에 호환·대체품 명시 키워드가 있으면 정품 검색 의도와 어긋나므로 무조건 컷. */
+const COMPATIBLE_KEYWORDS = [
+  "호환",
+  "대체",
+  "compatible",
+  "fit for",
+  "for use with",
+];
+
+function isCompatibleAccessory(name: string): boolean {
+  const lower = (name ?? "").toLowerCase();
+  return COMPATIBLE_KEYWORDS.some((kw) => lower.includes(kw));
+}
 
 /** "NWSLPK0400" 같은 영문대문자+숫자 코드 추출 (없으면 null) */
 function extractProductCode(query: string): string | null {
@@ -330,23 +334,47 @@ function filterCoupangByRelevance(
   const { threshold, mode } = effectiveThresholdFor(code, modelName);
   const before = products.length;
 
-  const scored: { p: CoupangProduct; score: number }[] = products.map((p) => ({
-    p,
-    score: scoreItemRelevance(
-      p.productName,
-      query,
-      code,
-      brandHint,
-      modelName
-    ),
-  }));
+  // 1) 호환·대체품 사전 컷 (항상 적용, threshold 무관)
+  const beforeCompat = products.length;
+  const compatFiltered = products.filter(
+    (p) => !isCompatibleAccessory(p.productName)
+  );
+  const compatibleCut = beforeCompat - compatFiltered.length;
+
+  // 2) 점수 산정
+  const scored: { p: CoupangProduct; score: number }[] = compatFiltered.map(
+    (p) => ({
+      p,
+      score: scoreItemRelevance(
+        p.productName,
+        query,
+        code,
+        brandHint,
+        modelName
+      ),
+    })
+  );
 
   let passed = scored.filter((s) => s.score >= threshold);
   let usedRelaxedMatch = false;
+  let relaxedBrandCut = 0;
+  let relaxedBrandKept = 0;
 
+  // 3) strict 0개 → relaxed 폴백 + brand 강제 가드
   if (passed.length === 0 && mode === "strict") {
     const relaxed = relaxedThresholdFor(modelName);
-    const relaxedPassed = scored.filter((s) => s.score >= relaxed);
+    let relaxedPassed = scored.filter((s) => s.score >= relaxed);
+
+    if (brandHint && relaxedPassed.length > 0) {
+      const before2 = relaxedPassed.length;
+      const lowerBrand = brandHint.toLowerCase();
+      relaxedPassed = relaxedPassed.filter((s) =>
+        s.p.productName.toLowerCase().includes(lowerBrand)
+      );
+      relaxedBrandCut = before2 - relaxedPassed.length;
+      relaxedBrandKept = relaxedPassed.length;
+    }
+
     if (relaxedPassed.length > 0) {
       passed = relaxedPassed;
       usedRelaxedMatch = true;
@@ -363,8 +391,11 @@ function filterCoupangByRelevance(
     modelName: modelName || null,
     brandHint: brandHint || null,
     before,
+    compatibleCut,
     after: passed.length,
     usedRelaxedMatch,
+    relaxedBrandCut,
+    relaxedBrandKept,
     topScore,
   });
 
@@ -385,17 +416,38 @@ function filterNaverByRelevance(
   const { threshold, mode } = effectiveThresholdFor(code, modelName);
   const before = items.length;
 
-  const scored: { i: NormalizedItem; score: number }[] = items.map((i) => ({
-    i,
-    score: scoreItemRelevance(i.title, query, code, brandHint, modelName),
-  }));
+  const beforeCompat = items.length;
+  const compatFiltered = items.filter(
+    (i) => !isCompatibleAccessory(i.title)
+  );
+  const compatibleCut = beforeCompat - compatFiltered.length;
+
+  const scored: { i: NormalizedItem; score: number }[] = compatFiltered.map(
+    (i) => ({
+      i,
+      score: scoreItemRelevance(i.title, query, code, brandHint, modelName),
+    })
+  );
 
   let passed = scored.filter((s) => s.score >= threshold);
   let usedRelaxedMatch = false;
+  let relaxedBrandCut = 0;
+  let relaxedBrandKept = 0;
 
   if (passed.length === 0 && mode === "strict") {
     const relaxed = relaxedThresholdFor(modelName);
-    const relaxedPassed = scored.filter((s) => s.score >= relaxed);
+    let relaxedPassed = scored.filter((s) => s.score >= relaxed);
+
+    if (brandHint && relaxedPassed.length > 0) {
+      const before2 = relaxedPassed.length;
+      const lowerBrand = brandHint.toLowerCase();
+      relaxedPassed = relaxedPassed.filter((s) =>
+        s.i.title.toLowerCase().includes(lowerBrand)
+      );
+      relaxedBrandCut = before2 - relaxedPassed.length;
+      relaxedBrandKept = relaxedPassed.length;
+    }
+
     if (relaxedPassed.length > 0) {
       passed = relaxedPassed;
       usedRelaxedMatch = true;
@@ -412,8 +464,11 @@ function filterNaverByRelevance(
     modelName: modelName || null,
     brandHint: brandHint || null,
     before,
+    compatibleCut,
     after: passed.length,
     usedRelaxedMatch,
+    relaxedBrandCut,
+    relaxedBrandKept,
     topScore,
   });
 
