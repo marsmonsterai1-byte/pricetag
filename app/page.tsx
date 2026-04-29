@@ -757,6 +757,9 @@ export default function Home() {
       setLoadingStep("search");
       const searchParams = new URLSearchParams();
       searchParams.set("query", productCode);
+      if (productCode) {
+        searchParams.set("productCode", productCode);
+      }
       if (brand) {
         searchParams.set("brand", brand);
       }

@@ -414,10 +414,18 @@ function enforceCategory(
   return { passed: true };
 }
 
-/** "NWSLPK0400" 같은 영문대문자+숫자 코드 추출 (없으면 null) */
+/**
+ * "NWSLPK0400" 같은 영문대문자+숫자 코드 추출 (없으면 null).
+ * primaryQuery 처럼 brand·productType 까지 합쳐진 문자열을 받을 때, 순수 영문 브랜드 토큰
+ * (예: "ADDITION") 이 첫 매칭으로 잡히는 false positive 를 막기 위해 g 플래그 + 숫자 포함 매칭 우선.
+ */
 function extractProductCode(query: string): string | null {
-  const m = query.toUpperCase().match(/[A-Z]{2,}[A-Z0-9]{3,}/);
-  return m ? m[0] : null;
+  const matches = query.toUpperCase().match(/[A-Z]{2,}[A-Z0-9]{3,}/g);
+  if (!matches || matches.length === 0) {
+    return null;
+  }
+  const withDigits = matches.find((m) => /\d/.test(m));
+  return withDigits ?? matches[matches.length - 1];
 }
 
 /**
@@ -762,7 +770,8 @@ async function runNaver(
   brand: string,
   modelName: string,
   productType: string,
-  barcode: string
+  barcode: string,
+  explicitCode: string
 ): Promise<NaverResult> {
   const clientId = process.env.NAVER_CLIENT_ID?.trim();
   const clientSecret = process.env.NAVER_CLIENT_SECRET?.trim();
@@ -780,7 +789,8 @@ async function runNaver(
   }
 
   try {
-    const code = extractProductCode(primaryQuery);
+    // 우선순위: explicit URL 파라미터 > regex 추출 (수동 검색 fallback)
+    const code = explicitCode || extractProductCode(primaryQuery);
     const steps = buildSearchSteps({ brand, modelName, productType, code });
 
     let items: NormalizedItem[] = [];
@@ -878,10 +888,12 @@ async function runCoupang(
   brand: string,
   modelName: string,
   productType: string,
-  barcode: string
+  barcode: string,
+  explicitCode: string
 ): Promise<CoupangResult> {
   try {
-    const code = extractProductCode(primaryQuery);
+    // 우선순위: explicit URL 파라미터 > regex 추출 (수동 검색 fallback)
+    const code = explicitCode || extractProductCode(primaryQuery);
     const steps = buildSearchSteps({ brand, modelName, productType, code });
 
     let products: CoupangProduct[] = [];
@@ -1011,6 +1023,8 @@ export async function GET(request: NextRequest) {
       request.nextUrl.searchParams.get("modelName")?.trim() ?? "";
     const productType =
       request.nextUrl.searchParams.get("productType")?.trim() ?? "";
+    const explicitCode =
+      request.nextUrl.searchParams.get("productCode")?.trim() ?? "";
     const barcodeRaw =
       request.nextUrl.searchParams.get("barcode")?.trim() ?? "";
     const barcode =
@@ -1031,8 +1045,22 @@ export async function GET(request: NextRequest) {
     }
 
     const settled = await Promise.allSettled([
-      runNaver(primaryQuery, brand, modelName, productType, barcode),
-      runCoupang(primaryQuery, brand, modelName, productType, barcode),
+      runNaver(
+        primaryQuery,
+        brand,
+        modelName,
+        productType,
+        barcode,
+        explicitCode
+      ),
+      runCoupang(
+        primaryQuery,
+        brand,
+        modelName,
+        productType,
+        barcode,
+        explicitCode
+      ),
     ]);
 
     const naverResult: NaverResult =
