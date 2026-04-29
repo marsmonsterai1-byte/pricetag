@@ -838,7 +838,7 @@ async function runNaver(
       }
     }
 
-    // Step 6: barcode (관련도 필터 우회)
+    // Step 6: barcode 폴백 (productType 있으면 카테고리 검사 유지 — barcode 단독 키워드 검색은 무관 결과 섞임)
     let usedBarcode = false;
     if (items.length === 0 && barcode) {
       attempted++;
@@ -848,8 +848,26 @@ async function runNaver(
         clientId,
         clientSecret
       );
-      if (byBarcode.length > 0) {
-        items = byBarcode;
+      console.log("[barcode fallback] (naver)", {
+        barcode,
+        productType: productType || null,
+        rawCount: byBarcode.length,
+        sampleTitles: byBarcode.slice(0, 5).map((i) => i.title),
+      });
+      let kept = byBarcode;
+      if (kept.length > 0 && productType.trim()) {
+        const filtered = kept.filter(
+          (item) => enforceCategory(item.title, productType).passed
+        );
+        console.log("[barcode fallback category enforce] (naver)", {
+          before: kept.length,
+          after: filtered.length,
+          cut: kept.length - filtered.length,
+        });
+        kept = filtered;
+      }
+      if (kept.length > 0) {
+        items = kept;
         usedBarcode = true;
         usedRelaxedMatch = false;
         usedCodePermutation = null;
@@ -943,7 +961,7 @@ async function runCoupang(
       }
     }
 
-    // Step 6: barcode (관련도 필터 우회)
+    // Step 6: barcode 폴백 (productType 있으면 카테고리 검사 유지 — barcode 단독 키워드 검색은 무관 결과 섞임)
     let usedBarcode = false;
     if (products.length === 0 && barcode) {
       attempted++;
@@ -951,8 +969,26 @@ async function runCoupang(
       const byBarcode = (
         await coupangSearchProducts(barcode, COUPANG_LIMIT)
       ).filter((p) => p.productPrice > 0);
-      if (byBarcode.length > 0) {
-        products = byBarcode;
+      console.log("[barcode fallback] (coupang)", {
+        barcode,
+        productType: productType || null,
+        rawCount: byBarcode.length,
+        sampleTitles: byBarcode.slice(0, 5).map((p) => p.productName),
+      });
+      let kept = byBarcode;
+      if (kept.length > 0 && productType.trim()) {
+        const filtered = kept.filter(
+          (p) => enforceCategory(p.productName, productType).passed
+        );
+        console.log("[barcode fallback category enforce] (coupang)", {
+          before: kept.length,
+          after: filtered.length,
+          cut: kept.length - filtered.length,
+        });
+        kept = filtered;
+      }
+      if (kept.length > 0) {
+        products = kept;
         usedBarcode = true;
         usedRelaxedMatch = false;
         usedCodePermutation = null;
