@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "BOGOSA - 사기 전에, 3초만",
   description: "매장에서 본 상품, 온라인 최저가 3초 만에 확인하세요",
+  manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
