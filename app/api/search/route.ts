@@ -301,6 +301,119 @@ function isCompatibleAccessory(name: string): boolean {
   return COMPATIBLE_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
+/**
+ * productType 별 카테고리 동의어 그룹.
+ * - 같은 그룹 단어가 title 에 있어야 통과 (category_mismatch 방지)
+ * - 다른 그룹 단어가 title 에 있으면 컷 (wrong_category_word_present)
+ * - productType 이 이 맵 키에 없으면 검사 skip (P1 정책 — 누락된 카테고리는 회귀 위험 회피)
+ */
+const CATEGORY_GROUPS: Record<string, string[]> = {
+  // 의류
+  슬랙스: ["슬랙스", "바지", "팬츠", "트라우저", "slacks", "pants"],
+  스웨터: ["스웨터", "니트", "knit", "sweater", "풀오버", "pullover"],
+  스커트: ["스커트", "skirt"],
+  원피스: ["원피스", "드레스", "dress"],
+  자켓: ["자켓", "재킷", "jacket", "블레이저", "blazer"],
+  코트: ["코트", "coat"],
+  가디건: ["가디건", "cardigan"],
+  셔츠: ["셔츠", "shirt", "블라우스", "blouse"],
+  티셔츠: ["티셔츠", "t-shirt", "tee", "반팔", "긴팔"],
+  후드: ["후드", "hoodie", "맨투맨", "스웨트셔츠", "sweatshirt"],
+  청바지: ["청바지", "데님", "denim", "jeans"],
+  반바지: ["반바지", "쇼츠", "shorts"],
+  속옷: ["속옷", "언더웨어", "underwear"],
+  잠옷: ["잠옷", "파자마", "pajama", "pyjama"],
+  // 신발
+  신발: ["신발", "운동화", "스니커즈", "sneakers", "구두"],
+  운동화: ["운동화", "스니커즈", "sneakers", "신발"],
+  구두: ["구두", "로퍼", "loafer", "신발"],
+  샌들: ["샌들", "sandal"],
+  // 가방·잡화
+  가방: ["가방", "백", "bag"],
+  백팩: ["백팩", "backpack", "가방"],
+  크로스백: ["크로스백", "crossbody", "가방"],
+  토트백: ["토트", "tote", "가방"],
+  지갑: ["지갑", "wallet"],
+  벨트: ["벨트", "belt"],
+  양말: ["양말", "socks"],
+  스카프: ["스카프", "머플러", "scarf"],
+  모자: ["모자", "캡", "cap", "hat"],
+  선글라스: ["선글라스", "sunglasses"],
+  안경: ["안경", "glasses"],
+  // 생활용품
+  섬유유연제: ["섬유유연제", "섬유유연", "fabric softener"],
+  세제: ["세제", "detergent"],
+  샴푸: ["샴푸", "shampoo"],
+  // 식품·건강 (5060 핵심)
+  라면: ["라면", "ramen"],
+  비타민: ["비타민", "vitamin"],
+  영양제: ["영양제", "supplement"],
+  // 화장품
+  세럼: ["세럼", "serum", "앰플", "ampoule"],
+  크림: ["크림", "cream"],
+  립스틱: ["립스틱", "lipstick"],
+  선크림: ["선크림", "선블록", "sunscreen", "sunblock"],
+  // 가전
+  에어프라이어: ["에어프라이어", "에어 프라이어", "airfryer", "air fryer"],
+  청소기: ["청소기", "vacuum"],
+  스마트폰: ["스마트폰", "smartphone", "휴대폰"],
+  // 의료
+  혈압계: ["혈압계", "blood pressure"],
+  체온계: ["체온계", "thermometer"],
+};
+
+type CategoryCheckResult = {
+  passed: boolean;
+  reason?: "category_mismatch" | "wrong_category_word_present" | "no_check";
+};
+
+/**
+ * productType 카테고리 일치 검사.
+ * - productType 빈 값 또는 CATEGORY_GROUPS 키에 없음 → 검사 skip (P1)
+ * - 타겟 그룹 동의어 중 하나라도 title 에 있어야 통과 (없으면 category_mismatch)
+ * - 다른 그룹 단어가 title 에 있으면 컷 (wrong_category_word_present) — 단 같은 그룹과 공유되는 동의어는 예외
+ */
+function enforceCategory(
+  title: string,
+  productType: string
+): CategoryCheckResult {
+  const trimmedType = productType.trim();
+  if (!trimmedType) {
+    return { passed: true, reason: "no_check" };
+  }
+  const targetGroup = CATEGORY_GROUPS[trimmedType];
+  if (!targetGroup) {
+    return { passed: true, reason: "no_check" };
+  }
+
+  const lowerTitle = (title ?? "").toLowerCase();
+
+  const hasTargetCategory = targetGroup.some((syn) =>
+    lowerTitle.includes(syn.toLowerCase())
+  );
+  if (!hasTargetCategory) {
+    return { passed: false, reason: "category_mismatch" };
+  }
+
+  const targetSynonyms = new Set(targetGroup.map((s) => s.toLowerCase()));
+  for (const [otherType, otherGroup] of Object.entries(CATEGORY_GROUPS)) {
+    if (otherType === trimmedType) {
+      continue;
+    }
+    for (const otherSyn of otherGroup) {
+      const lowerSyn = otherSyn.toLowerCase();
+      if (targetSynonyms.has(lowerSyn)) {
+        continue;
+      }
+      if (lowerTitle.includes(lowerSyn)) {
+        return { passed: false, reason: "wrong_category_word_present" };
+      }
+    }
+  }
+
+  return { passed: true };
+}
+
 /** "NWSLPK0400" 같은 영문대문자+숫자 코드 추출 (없으면 null) */
 function extractProductCode(query: string): string | null {
   const m = query.toUpperCase().match(/[A-Z]{2,}[A-Z0-9]{3,}/);
@@ -467,7 +580,8 @@ function filterCoupangByRelevance(
   products: CoupangProduct[],
   query: string,
   brand: string,
-  modelName: string
+  modelName: string,
+  productType: string
 ): { products: CoupangProduct[]; usedRelaxedMatch: boolean } {
   const code = extractProductCode(query);
   const brandHint = extractBrandHint(brand, query);
@@ -521,6 +635,16 @@ function filterCoupangByRelevance(
     }
   }
 
+  // 4) productType 카테고리 강제 검사 (P1: 그룹에 없으면 skip)
+  let categoryMismatchCut = 0;
+  if (productType.trim()) {
+    const beforeCategory = passed.length;
+    passed = passed.filter(
+      (s) => enforceCategory(s.p.productName, productType).passed
+    );
+    categoryMismatchCut = beforeCategory - passed.length;
+  }
+
   const topScore = passed.reduce((m, s) => Math.max(m, s.score), 0);
 
   console.log("[coupang filter]", {
@@ -530,12 +654,14 @@ function filterCoupangByRelevance(
     productCode: code,
     modelName: modelName || null,
     brandHint: brandHint || null,
+    productType: productType || null,
     before,
     compatibleCut,
     after: passed.length,
     usedRelaxedMatch,
     relaxedBrandCut,
     relaxedBrandKept,
+    categoryMismatchCut,
     topScore,
   });
 
@@ -549,7 +675,8 @@ function filterNaverByRelevance(
   items: NormalizedItem[],
   query: string,
   brand: string,
-  modelName: string
+  modelName: string,
+  productType: string
 ): { items: NormalizedItem[]; usedRelaxedMatch: boolean } {
   const code = extractProductCode(query);
   const brandHint = extractBrandHint(brand, query);
@@ -594,6 +721,16 @@ function filterNaverByRelevance(
     }
   }
 
+  // productType 카테고리 강제 검사 (P1: 그룹에 없으면 skip)
+  let categoryMismatchCut = 0;
+  if (productType.trim()) {
+    const beforeCategory = passed.length;
+    passed = passed.filter(
+      (s) => enforceCategory(s.i.title, productType).passed
+    );
+    categoryMismatchCut = beforeCategory - passed.length;
+  }
+
   const topScore = passed.reduce((m, s) => Math.max(m, s.score), 0);
 
   console.log("[naver filter]", {
@@ -603,12 +740,14 @@ function filterNaverByRelevance(
     productCode: code,
     modelName: modelName || null,
     brandHint: brandHint || null,
+    productType: productType || null,
     before,
     compatibleCut,
     after: passed.length,
     usedRelaxedMatch,
     relaxedBrandCut,
     relaxedBrandKept,
+    categoryMismatchCut,
     topScore,
   });
 
@@ -658,7 +797,8 @@ async function runNaver(
         raw,
         step.query,
         brand,
-        step.filterModelName
+        step.filterModelName,
+        productType
       );
       const matched = filtered.items.length > 0;
       console.log("[search step] (naver)", {
@@ -760,7 +900,8 @@ async function runCoupang(
         raw,
         step.query,
         brand,
-        step.filterModelName
+        step.filterModelName,
+        productType
       );
       const matched = filtered.products.length > 0;
       console.log("[search step] (coupang)", {
