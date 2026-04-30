@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  USER_MESSAGE_BY_KIND,
+  type ExtractErrorKind,
+} from "@/lib/extract-types";
 
 const KIE_MESSAGES_PATH = "/claude/v1/messages";
 
@@ -277,6 +281,37 @@ function parseExtractFromContent(content: string): {
   return empty;
 }
 
+function classifyKieError(status: number, body: string): ExtractErrorKind {
+  const lowerBody = body.toLowerCase();
+  if (status === 413) {
+    return "too_large";
+  }
+  if (status >= 400 && status < 500) {
+    return "client_error";
+  }
+  if (status >= 500) {
+    if (
+      lowerBody.includes("maintained") ||
+      lowerBody.includes("maintenance")
+    ) {
+      return "maintenance";
+    }
+    if (lowerBody.includes("network error")) {
+      return "network";
+    }
+    return "unknown";
+  }
+  return "unknown";
+}
+
+function buildErrorResponse(kind: ExtractErrorKind) {
+  return {
+    ok: false as const,
+    errorKind: kind,
+    userMessage: USER_MESSAGE_BY_KIND[kind],
+  };
+}
+
 function extractAssistantText(data: {
   content?: Array<{ type?: string; text?: string }>;
 }): string {
@@ -301,10 +336,10 @@ export async function POST(request: NextRequest) {
     ).replace(/\/$/, "");
 
     if (!apiKey || !visionModel) {
-      return NextResponse.json(
-        { error: "KIE API 설정이 없습니다" },
-        { status: 500 }
-      );
+      console.error("[extract] KIE API 설정 누락");
+      return NextResponse.json(buildErrorResponse("unknown"), {
+        status: 200,
+      });
     }
 
     const messagesUrl = `${kieBaseUrl}${KIE_MESSAGES_PATH}`;
@@ -313,10 +348,9 @@ export async function POST(request: NextRequest) {
     try {
       body = await request.json();
     } catch {
-      return NextResponse.json(
-        { error: "잘못된 JSON 요청" },
-        { status: 400 }
-      );
+      return NextResponse.json(buildErrorResponse("client_error"), {
+        status: 400,
+      });
     }
 
     const { imageBase64, mimeType } = body as {
@@ -330,10 +364,9 @@ export async function POST(request: NextRequest) {
       !imageBase64 ||
       !mimeType
     ) {
-      return NextResponse.json(
-        { error: "이미지 데이터가 필요합니다" },
-        { status: 400 }
-      );
+      return NextResponse.json(buildErrorResponse("client_error"), {
+        status: 400,
+      });
     }
 
     const upstream = await fetch(messagesUrl, {
@@ -370,10 +403,8 @@ export async function POST(request: NextRequest) {
     if (!upstream.ok) {
       const errBody = await upstream.text();
       console.error("KIE.AI API error:", upstream.status, errBody);
-      return NextResponse.json(
-        { error: "AI 분석 실패" },
-        { status: 500 }
-      );
+      const kind = classifyKieError(upstream.status, errBody);
+      return NextResponse.json(buildErrorResponse(kind), { status: 200 });
     }
 
     const data = (await upstream.json()) as {
@@ -393,9 +424,8 @@ export async function POST(request: NextRequest) {
     });
   } catch (e) {
     console.error("extract route:", e);
-    return NextResponse.json(
-      { error: "일시적 오류" },
-      { status: 500 }
-    );
+    return NextResponse.json(buildErrorResponse("network"), {
+      status: 200,
+    });
   }
 }

@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import type { CoupangProduct } from "@/lib/coupang";
+import type { ExtractErrorKind } from "@/lib/extract-types";
 import {
   addHistory,
   clearHistory,
@@ -66,6 +67,33 @@ type SavingsCardData = {
   borderLineColor: string;
   glowColor: string;
 };
+
+function errorChipStyle(kind: ExtractErrorKind | null): {
+  background: string;
+  borderColor: string;
+  color: string;
+} {
+  switch (kind) {
+    case "maintenance":
+      return {
+        background: "var(--tip-bg)",
+        borderColor: "var(--tip-border)",
+        color: "var(--text-primary)",
+      };
+    case "network":
+      return {
+        background: "rgba(107, 114, 128, 0.08)",
+        borderColor: "rgba(107, 114, 128, 0.2)",
+        color: "var(--text-secondary)",
+      };
+    default:
+      return {
+        background: "var(--error-bg)",
+        borderColor: "rgba(239, 68, 68, 0.2)",
+        color: "var(--error-text)",
+      };
+  }
+}
 
 function formatWon(n: number) {
   return n.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
@@ -328,6 +356,13 @@ export default function Home() {
   }, []);
   const [storePrice, setStorePrice] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [errorKind, setErrorKind] = useState<ExtractErrorKind | null>(null);
+
+  useEffect(() => {
+    if (!error) {
+      setErrorKind(null);
+    }
+  }, [error]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [tipDismissed, setTipDismissed] = useState(false);
@@ -688,16 +723,27 @@ export default function Home() {
         body: JSON.stringify({ imageBase64, mimeType }),
       });
 
-      if (!extractRes.ok) {
+      let extractJson:
+        | (ExtractResult & { ok?: never })
+        | {
+            ok: false;
+            errorKind: ExtractErrorKind;
+            userMessage: string;
+          };
+      try {
+        extractJson = await extractRes.json();
+      } catch {
         setError("일시적 오류, 다시 시도");
         return;
       }
 
-      const extractJson = (await extractRes.json()) as ExtractResult & {
-        error?: string;
-      };
+      if ("ok" in extractJson && extractJson.ok === false) {
+        setError(extractJson.userMessage);
+        setErrorKind(extractJson.errorKind);
+        return;
+      }
 
-      if ("error" in extractJson && extractJson.error) {
+      if (!extractRes.ok) {
         setError("일시적 오류, 다시 시도");
         return;
       }
@@ -1295,11 +1341,7 @@ export default function Home() {
         {error ? (
           <div
             className="rounded-3xl border p-4 text-center text-sm leading-relaxed [backdrop-filter:blur(10px)] [-webkit-backdrop-filter:blur(10px)]"
-            style={{
-              background: "var(--error-bg)",
-              borderColor: "rgba(239, 68, 68, 0.2)",
-              color: "var(--error-text)",
-            }}
+            style={errorChipStyle(errorKind)}
             role="alert"
           >
             {error}
